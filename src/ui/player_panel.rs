@@ -1,0 +1,147 @@
+use poise::serenity_prelude as serenity;
+use serenity::{
+    ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, CreateMessage, EditMessage,
+};
+
+use crate::{Data, Error};
+
+pub const BTN_PAUSE_RESUME: &str = "music:pause_resume";
+pub const BTN_SKIP: &str = "music:skip";
+pub const BTN_STOP: &str = "music:stop";
+pub const BTN_QUEUE: &str = "music:queue";
+pub const BTN_LOOP: &str = "music:loop";
+pub const BTN_REFRESH: &str = "music:refresh_player";
+
+pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> CreateEmbed {
+    let state_lock = data.music.get(guild_id).await;
+    let state = state_lock.lock().await;
+
+    let mut embed = CreateEmbed::new();
+
+    if let Some(track) = &state.now_playing {
+        let status = if state.is_paused {
+            "⏸ Paused"
+        } else {
+            "▶ Playing"
+        };
+
+        embed = embed.title("🎵 Music Player").description(format!(
+            "{status}\n\n**{}**\nDurasi: `{}`\nRequested by: <@{}>\n\nQueue: `{}` lagu\nLoop: `{}`",
+            track.title,
+            track.duration_label(),
+            track.requested_by.get(),
+            state.queue.len(),
+            state.loop_mode.label(),
+        ));
+
+        if let Some(thumbnail) = &track.thumbnail {
+            embed = embed.thumbnail(thumbnail);
+        }
+    } else {
+        embed = embed.title("🎵 Music Player").description(
+            "Tidak ada lagu yang sedang diputar.\n\nGunakan `/play <url atau judul lagu>`.",
+        );
+    }
+
+    embed
+}
+
+pub fn build_player_buttons(is_paused: bool, loop_label: &str) -> Vec<CreateActionRow> {
+    let pause_label = if is_paused { "▶ Resume" } else { "⏸ Pause" };
+
+    vec![
+        CreateActionRow::Buttons(vec![
+            CreateButton::new(BTN_PAUSE_RESUME)
+                .label(pause_label)
+                .style(ButtonStyle::Primary),
+            CreateButton::new(BTN_SKIP)
+                .label("⏭ Skip")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_STOP)
+                .label("⏹ Stop")
+                .style(ButtonStyle::Danger),
+        ]),
+        CreateActionRow::Buttons(vec![
+            CreateButton::new(BTN_QUEUE)
+                .label("📜 Queue")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_LOOP)
+                .label(format!("🔁 Loop: {loop_label}"))
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_REFRESH)
+                .label("🔄 Refresh")
+                .style(ButtonStyle::Secondary),
+        ]),
+    ]
+}
+
+pub async fn build_player_components(
+    data: &Data,
+    guild_id: serenity::GuildId,
+) -> Vec<CreateActionRow> {
+    let state_lock = data.music.get(guild_id).await;
+    let state = state_lock.lock().await;
+    build_player_buttons(state.is_paused, state.loop_mode.label())
+}
+
+/// Kirim panel baru, atau update message lama kalau masih ada.
+pub async fn send_or_update_player_panel(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+    channel_id: serenity::ChannelId,
+) -> Result<(), Error> {
+    let embed = build_player_embed(data, guild_id).await;
+    let components = build_player_components(data, guild_id).await;
+
+    let maybe_msg_id = {
+        let state_lock = data.music.get(guild_id).await;
+        let state = state_lock.lock().await;
+        state.player_message_id
+    };
+
+    if let Some(message_id) = maybe_msg_id {
+        let edit = EditMessage::new().embed(embed).components(components);
+
+        match channel_id.edit_message(ctx, message_id, edit).await {
+            Ok(_) => return Ok(()),
+            Err(err) => tracing::warn!("failed edit player panel, send new one: {err:?}"),
+        }
+    }
+
+    let msg = channel_id
+        .send_message(
+            ctx,
+            CreateMessage::new()
+                .embed(build_player_embed(data, guild_id).await)
+                .components(build_player_components(data, guild_id).await),
+        )
+        .await?;
+
+    {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        state.player_message_id = Some(msg.id);
+        state.player_channel_id = Some(channel_id);
+    }
+
+    Ok(())
+}
+
+pub async fn update_player_message(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+) -> Result<(), Error> {
+    let channel_id = {
+        let state_lock = data.music.get(guild_id).await;
+        let state = state_lock.lock().await;
+        state.player_channel_id
+    };
+
+    if let Some(channel_id) = channel_id {
+        send_or_update_player_panel(ctx, data, guild_id, channel_id).await?;
+    }
+
+    Ok(())
+}

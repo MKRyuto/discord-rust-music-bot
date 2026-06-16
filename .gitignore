@@ -1,0 +1,24 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Logs and runtime output
+*.log
+logs/
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# Local temp files
+tmp/
+temp/
