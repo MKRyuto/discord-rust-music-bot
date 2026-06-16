@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use poise::serenity_prelude as serenity;
 use songbird::input::YoutubeDl;
 use songbird::{Event, EventContext, EventHandler, TrackEvent};
@@ -63,6 +65,55 @@ pub async fn set_volume(
         .ok();
 
     Ok(())
+}
+
+pub async fn adjust_volume(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+    delta: i16,
+) -> Result<u8, Error> {
+    ensure_guild_settings(data, guild_id).await?;
+
+    let next_volume = {
+        let state_lock = data.music.get(guild_id).await;
+        let state = state_lock.lock().await;
+        (state.volume_percent as i16 + delta).clamp(0, 200) as u8
+    };
+
+    set_volume(ctx, data, guild_id, next_volume).await?;
+    Ok(next_volume)
+}
+
+pub async fn shuffle_queue(data: &Data, guild_id: serenity::GuildId) -> usize {
+    let state_lock = data.music.get(guild_id).await;
+    let mut state = state_lock.lock().await;
+
+    if state.queue.len() < 2 {
+        return 0;
+    }
+
+    let mut tracks = state.queue.drain(..).collect::<Vec<_>>();
+    shuffle_tracks(&mut tracks);
+    let total = tracks.len();
+    state.queue = tracks.into();
+    state.queue_page = 0;
+    total
+}
+
+fn shuffle_tracks<T>(tracks: &mut [T]) {
+    let mut seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0x9e37_79b9_7f4a_7c15);
+
+    for idx in (1..tracks.len()).rev() {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let swap_idx = (seed as usize) % (idx + 1);
+        tracks.swap(idx, swap_idx);
+    }
 }
 
 /// Cari voice channel user di guild.

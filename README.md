@@ -10,7 +10,7 @@ Discord Rust Music Bot is a slash-command music bot with per-server queues, inte
 - Slash commands only, no message-content intent required
 - YouTube URL and keyword search playback through `yt-dlp`
 - Voice playback through Songbird
-- Player panel with pause, resume, skip, stop, loop, queue, and refresh
+- Player panel with pause, resume, skip, stop, loop, queue, volume, shuffle, playlists, and refresh
 - Queue panel with paginated navigation
 - Volume control with persisted guild settings
 - Queue shuffle
@@ -171,8 +171,11 @@ Player panel:
 - Stop
 - Queue
 - Loop mode
+- Volume down
+- Volume up
+- Shuffle queue
+- Show saved playlists
 - Refresh
-- Volume is controlled with `/volume`
 
 Queue panel:
 

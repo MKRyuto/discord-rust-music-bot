@@ -54,6 +54,27 @@ pub async fn handle_event(
 
             update_component_to_player(ctx, data, component, guild_id).await?;
         }
+        player_panel::BTN_VOLUME_DOWN => {
+            component.defer(ctx).await?;
+            player::adjust_volume(ctx, data, guild_id, -10).await?;
+        }
+        player_panel::BTN_VOLUME_UP => {
+            component.defer(ctx).await?;
+            player::adjust_volume(ctx, data, guild_id, 10).await?;
+        }
+        player_panel::BTN_SHUFFLE => {
+            let total = player::shuffle_queue(data, guild_id).await;
+            update_component_to_player(ctx, data, component, guild_id).await?;
+
+            if total > 0 {
+                player_panel::update_player_message(ctx, data, guild_id)
+                    .await
+                    .ok();
+            }
+        }
+        player_panel::BTN_PLAYLISTS => {
+            show_playlists(ctx, data, component, guild_id).await?;
+        }
         player_panel::BTN_REFRESH | queue_panel::BTN_PLAYER => {
             update_component_to_player(ctx, data, component, guild_id).await?;
         }
@@ -94,6 +115,48 @@ pub async fn handle_event(
         }
         _ => {}
     }
+
+    Ok(())
+}
+
+async fn show_playlists(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    guild_id: serenity::GuildId,
+) -> Result<(), Error> {
+    let playlists = data.db.list_playlists(guild_id)?;
+    let content = if playlists.is_empty() {
+        "Belum ada saved playlist. Pakai `/playlist save name:<nama>` buat simpan queue sekarang."
+            .to_string()
+    } else {
+        let list = playlists
+            .iter()
+            .take(10)
+            .map(|playlist| {
+                format!(
+                    "- `{}` - `{}` track(s)",
+                    playlist.name, playlist.track_count
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        format!(
+            "Saved playlists:\n{list}\n\nLoad pakai `/playlist load name:<nama>`. Save queue sekarang pakai `/playlist save name:<nama>`."
+        )
+    };
+
+    component
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(content)
+                    .ephemeral(true),
+            ),
+        )
+        .await?;
 
     Ok(())
 }

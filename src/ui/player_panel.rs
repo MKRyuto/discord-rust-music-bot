@@ -11,6 +11,10 @@ pub const BTN_STOP: &str = "music:stop";
 pub const BTN_QUEUE: &str = "music:queue";
 pub const BTN_LOOP: &str = "music:loop";
 pub const BTN_REFRESH: &str = "music:refresh_player";
+pub const BTN_VOLUME_DOWN: &str = "music:volume_down";
+pub const BTN_VOLUME_UP: &str = "music:volume_up";
+pub const BTN_SHUFFLE: &str = "music:shuffle";
+pub const BTN_PLAYLISTS: &str = "music:playlists";
 
 pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> CreateEmbed {
     let state_lock = data.music.get(guild_id).await;
@@ -71,6 +75,20 @@ pub fn build_player_buttons(is_paused: bool, loop_label: &str) -> Vec<CreateActi
                 .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_REFRESH)
                 .label("Refresh")
+                .style(ButtonStyle::Secondary),
+        ]),
+        CreateActionRow::Buttons(vec![
+            CreateButton::new(BTN_VOLUME_DOWN)
+                .label("Vol -")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_VOLUME_UP)
+                .label("Vol +")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_SHUFFLE)
+                .label("Shuffle")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_PLAYLISTS)
+                .label("Playlists")
                 .style(ButtonStyle::Secondary),
         ]),
     ]
