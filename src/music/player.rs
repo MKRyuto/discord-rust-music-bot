@@ -1,7 +1,8 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use poise::serenity_prelude as serenity;
 use songbird::input::YoutubeDl;
+use songbird::tracks::{ReadyState, TrackHandle};
 use songbird::{Event, EventContext, EventHandler, TrackEvent};
 
 use crate::music::track::Track;
@@ -247,15 +248,19 @@ pub async fn play_track(
 
     track_handle.add_event(
         Event::Track(TrackEvent::Playable),
-        TrackStateLogger {
-            event_name: "playable",
+        TrackPlayableNotifier {
+            data: data.clone(),
+            guild_id,
+            track: track.clone(),
         },
     )?;
 
     track_handle.add_event(
         Event::Track(TrackEvent::Error),
-        TrackStateLogger {
-            event_name: "error",
+        TrackErrorNotifier {
+            ctx: ctx.clone(),
+            data: data.clone(),
+            guild_id,
         },
     )?;
 
@@ -268,27 +273,133 @@ pub async fn play_track(
         },
     )?;
 
+    spawn_prepare_timeout(
+        ctx.clone(),
+        data.clone(),
+        guild_id,
+        track_handle.clone(),
+        track.title.clone(),
+    );
+
     Ok(())
 }
 
-struct TrackStateLogger {
-    event_name: &'static str,
+fn spawn_prepare_timeout(
+    ctx: serenity::Context,
+    data: Data,
+    guild_id: serenity::GuildId,
+    track_handle: TrackHandle,
+    title: String,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(25)).await;
+
+        let Ok(state) = track_handle.get_info().await else {
+            return;
+        };
+
+        if state.ready == ReadyState::Playable {
+            return;
+        }
+
+        tracing::warn!(
+            title = %title,
+            ready = ?state.ready,
+            playing = ?state.playing,
+            "track prepare timed out; skipping"
+        );
+
+        {
+            let state_lock = data.music.get(guild_id).await;
+            let mut music_state = state_lock.lock().await;
+            if music_state
+                .current_handle
+                .as_ref()
+                .is_some_and(|handle| handle.uuid() == track_handle.uuid())
+            {
+                music_state.suppress_next_end = true;
+            } else {
+                return;
+            }
+        }
+
+        track_handle.stop().ok();
+
+        if let Err(err) = advance_queue(&ctx, &data, guild_id).await {
+            tracing::warn!("advance queue after prepare timeout failed: {err:?}");
+        }
+    });
+}
+
+struct TrackPlayableNotifier {
+    data: Data,
+    guild_id: serenity::GuildId,
+    track: Track,
 }
 
 #[async_trait::async_trait]
-impl EventHandler for TrackStateLogger {
+impl EventHandler for TrackPlayableNotifier {
     async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
         if let EventContext::Track(tracks) = ctx {
             for (state, _) in *tracks {
-                tracing::warn!(
-                    event = self.event_name,
+                tracing::info!(
                     ready = ?state.ready,
                     playing = ?state.playing,
                     position = ?state.position,
                     play_time = ?state.play_time,
-                    "songbird track event"
+                    title = %self.track.title,
+                    "songbird track playable"
                 );
             }
+        }
+
+        if let Err(err) = self.data.db.record_history(self.guild_id, &self.track) {
+            tracing::warn!("failed to record track history: {err:?}");
+        }
+
+        Some(Event::Cancel)
+    }
+}
+
+struct TrackErrorNotifier {
+    ctx: serenity::Context,
+    data: Data,
+    guild_id: serenity::GuildId,
+}
+
+#[async_trait::async_trait]
+impl EventHandler for TrackErrorNotifier {
+    async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
+        let mut errored_uuid = None;
+
+        if let EventContext::Track(tracks) = ctx {
+            for (state, handle) in *tracks {
+                errored_uuid = Some(handle.uuid());
+                tracing::warn!(
+                    ready = ?state.ready,
+                    playing = ?state.playing,
+                    position = ?state.position,
+                    play_time = ?state.play_time,
+                    track_uuid = ?handle.uuid(),
+                    "songbird track error; advancing queue"
+                );
+            }
+        }
+
+        if let Some(errored_uuid) = errored_uuid {
+            let state_lock = self.data.music.get(self.guild_id).await;
+            let mut state = state_lock.lock().await;
+            if state
+                .current_handle
+                .as_ref()
+                .is_some_and(|handle| handle.uuid() == errored_uuid)
+            {
+                state.suppress_next_end = true;
+            }
+        }
+
+        if let Err(err) = advance_queue(&self.ctx, &self.data, self.guild_id).await {
+            tracing::warn!("advance queue after track error failed: {err:?}");
         }
 
         Some(Event::Cancel)
@@ -338,13 +449,15 @@ pub async fn advance_queue(
 ) -> Result<(), Error> {
     let state_lock = data.music.get(guild_id).await;
 
-    let next_track = {
+    let (next_track, autoplay_requester, autoplay_exclude_url) = {
         let mut state = state_lock.lock().await;
 
         let finished = state.now_playing.take();
+        let autoplay_requester = finished.as_ref().map(|track| track.requested_by);
+        let autoplay_exclude_url = finished.as_ref().map(|track| track.url.clone());
         state.current_handle = None;
 
-        match state.loop_mode {
+        let next_track = match state.loop_mode {
             crate::music::state::LoopMode::One => {
                 if let Some(track) = finished {
                     state.now_playing = Some(track.clone());
@@ -366,10 +479,30 @@ pub async fn advance_queue(
                 state.now_playing = next.clone();
                 next
             }
-        }
+        };
+
+        (next_track, autoplay_requester, autoplay_exclude_url)
+    };
+
+    let next_track = if next_track.is_none() {
+        autoplay_track(
+            data,
+            guild_id,
+            autoplay_requester,
+            autoplay_exclude_url.as_deref(),
+        )
+        .await?
+    } else {
+        next_track
     };
 
     if let Some(track) = next_track {
+        {
+            let state_lock = data.music.get(guild_id).await;
+            let mut state = state_lock.lock().await;
+            state.now_playing = Some(track.clone());
+        }
+
         play_track(ctx, data, guild_id, track).await?;
     }
 
@@ -378,6 +511,30 @@ pub async fn advance_queue(
         .ok();
 
     Ok(())
+}
+
+async fn autoplay_track(
+    data: &Data,
+    guild_id: serenity::GuildId,
+    requester: Option<serenity::UserId>,
+    exclude_url: Option<&str>,
+) -> Result<Option<Track>, Error> {
+    if !data.db.autoplay_enabled(guild_id)? {
+        return Ok(None);
+    }
+
+    let Some(requester) = requester else {
+        return Ok(None);
+    };
+
+    let track = data
+        .db
+        .random_history_track(guild_id, requester, exclude_url)?;
+    if let Some(track) = &track {
+        tracing::info!(title = %track.title, "autoplay selected history track");
+    }
+
+    Ok(track)
 }
 
 pub async fn stop(

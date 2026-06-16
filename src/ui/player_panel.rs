@@ -19,6 +19,7 @@ pub const BTN_PLAYLISTS: &str = "music:playlists";
 pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> CreateEmbed {
     let state_lock = data.music.get(guild_id).await;
     let state = state_lock.lock().await;
+    let autoplay = data.db.autoplay_enabled(guild_id).unwrap_or(false);
 
     let mut embed = CreateEmbed::new();
 
@@ -30,13 +31,14 @@ pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> Cre
         };
 
         embed = embed.title("Music Player").description(format!(
-            "{status}\n\n**{}**\nDuration: `{}`\nRequested by: <@{}>\n\nQueue: `{}` track(s)\nLoop: `{}`\nVolume: `{}%`",
+            "{status}\n\n**{}**\nDuration: `{}`\nRequested by: <@{}>\n\nQueue: `{}` track(s)\nLoop: `{}`\nVolume: `{}%`\nAutoplay: `{}`",
             track.title,
             track.duration_label(),
             track.requested_by.get(),
             state.queue.len(),
             state.loop_mode.label(),
             state.volume_percent,
+            if autoplay { "On" } else { "Off" },
         ));
 
         if let Some(thumbnail) = &track.thumbnail {

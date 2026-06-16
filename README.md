@@ -1,6 +1,6 @@
 # Discord Rust Music Bot
 
-> Version 1.1.0 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
+> Version 1.2.0 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
 
 Discord Rust Music Bot is a slash-command music bot with per-server queues, interactive embeds, button controls, and YouTube/search playback. It is designed as a clean Rust codebase for a practical Discord music bot, not a giant all-in-one framework.
 
@@ -10,11 +10,14 @@ Discord Rust Music Bot is a slash-command music bot with per-server queues, inte
 - Slash commands only, no message-content intent required
 - YouTube URL and keyword search playback through `yt-dlp`
 - Voice playback through Songbird
+- Playback recovery for failed or stuck tracks
 - Player panel with pause, resume, skip, stop, loop, queue, volume, shuffle, playlists, and refresh
 - Queue panel with paginated navigation
 - Volume control with persisted guild settings
 - Queue shuffle
 - Saved playlists backed by SQLite
+- `/play` autocomplete from server track history
+- Optional history-based autoplay
 - Common audio container/codec support through Symphonia
 - Development-friendly guild command registration with `DEV_GUILD_ID`
 
@@ -155,6 +158,7 @@ winget upgrade Gyan.FFmpeg.Essentials
 | `/queue` | Show the queue panel. |
 | `/now` | Show the player panel. |
 | `/leave` | Stop playback and disconnect from voice. |
+| `/autoplay enabled:<true/false>` | Toggle history-based autoplay for the current server. |
 | `/volume percent:<0-200>` | Set playback volume for the current server. |
 | `/shuffle` | Shuffle the queued tracks. |
 | `/playlist save name:<text>` | Save now playing and the queue as a playlist. |
@@ -229,6 +233,12 @@ yt-dlp fails:
 
 - Update it with `winget upgrade yt-dlp.yt-dlp`.
 - Try a direct YouTube URL to separate search issues from playback issues.
+
+Autoplay does nothing:
+
+- Autoplay uses this server's playback history.
+- Play a few tracks first so the history table has songs to pick from.
+- Enable it with `/autoplay enabled:true`.
 
 ## Security Notes
 

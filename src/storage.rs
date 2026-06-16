@@ -19,6 +19,15 @@ pub struct PlaylistSummary {
     pub track_count: usize,
 }
 
+#[derive(Clone, Debug)]
+pub struct HistoryTrack {
+    pub title: String,
+    pub url: String,
+    pub duration_secs: Option<u64>,
+    pub thumbnail: Option<String>,
+    pub play_count: usize,
+}
+
 impl Database {
     pub fn new(path: impl Into<PathBuf>) -> Result<Self, Error> {
         let db = Self { path: path.into() };
@@ -42,7 +51,8 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS guild_settings (
                 guild_id TEXT PRIMARY KEY,
-                volume_percent INTEGER NOT NULL DEFAULT 100
+                volume_percent INTEGER NOT NULL DEFAULT 100,
+                autoplay_enabled INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS playlists (
@@ -67,8 +77,28 @@ impl Database {
                     REFERENCES playlists(guild_id, name)
                     ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS track_history (
+                guild_id TEXT NOT NULL,
+                url TEXT NOT NULL,
+                title TEXT NOT NULL,
+                duration_secs INTEGER,
+                thumbnail TEXT,
+                play_count INTEGER NOT NULL DEFAULT 1,
+                last_played_at INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, url)
+            );
             ",
         )?;
+
+        if let Err(err) = conn.execute(
+            "ALTER TABLE guild_settings ADD COLUMN autoplay_enabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        ) {
+            if !err.to_string().contains("duplicate column name") {
+                return Err(err.into());
+            }
+        }
 
         Ok(())
     }
@@ -108,6 +138,158 @@ impl Database {
         )?;
 
         Ok(())
+    }
+
+    pub fn autoplay_enabled(&self, guild_id: serenity::GuildId) -> Result<bool, Error> {
+        let conn = self.connect()?;
+        let enabled = conn
+            .query_row(
+                "SELECT autoplay_enabled FROM guild_settings WHERE guild_id = ?1",
+                params![guild_id.get().to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            != 0;
+
+        Ok(enabled)
+    }
+
+    pub fn set_autoplay_enabled(
+        &self,
+        guild_id: serenity::GuildId,
+        enabled: bool,
+    ) -> Result<(), Error> {
+        let conn = self.connect()?;
+        conn.execute(
+            "
+            INSERT INTO guild_settings (guild_id, autoplay_enabled)
+            VALUES (?1, ?2)
+            ON CONFLICT(guild_id) DO UPDATE SET autoplay_enabled = excluded.autoplay_enabled
+            ",
+            params![guild_id.get().to_string(), if enabled { 1 } else { 0 }],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn record_history(
+        &self,
+        guild_id: serenity::GuildId,
+        track: &Track,
+    ) -> Result<(), Error> {
+        let conn = self.connect()?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+
+        conn.execute(
+            "
+            INSERT INTO track_history (
+                guild_id,
+                url,
+                title,
+                duration_secs,
+                thumbnail,
+                play_count,
+                last_played_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)
+            ON CONFLICT(guild_id, url) DO UPDATE SET
+                title = excluded.title,
+                duration_secs = excluded.duration_secs,
+                thumbnail = excluded.thumbnail,
+                play_count = track_history.play_count + 1,
+                last_played_at = excluded.last_played_at
+            ",
+            params![
+                guild_id.get().to_string(),
+                track.url,
+                track.title,
+                track.duration_secs.map(|duration| duration as i64),
+                track.thumbnail,
+                now,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn search_history(
+        &self,
+        guild_id: serenity::GuildId,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<HistoryTrack>, Error> {
+        let conn = self.connect()?;
+        let pattern = format!("%{}%", query.trim());
+        let mut stmt = conn.prepare(
+            "
+            SELECT title, url, duration_secs, thumbnail, play_count
+            FROM track_history
+            WHERE guild_id = ?1
+                AND (?2 = '%%' OR title LIKE ?2 OR url LIKE ?2)
+            ORDER BY play_count DESC, last_played_at DESC
+            LIMIT ?3
+            ",
+        )?;
+
+        let rows = stmt.query_map(
+            params![guild_id.get().to_string(), pattern, limit as i64],
+            |row| {
+                let duration_secs = row
+                    .get::<_, Option<i64>>(2)?
+                    .and_then(|duration| u64::try_from(duration).ok());
+
+                Ok(HistoryTrack {
+                    title: row.get(0)?,
+                    url: row.get(1)?,
+                    duration_secs,
+                    thumbnail: row.get(3)?,
+                    play_count: row.get::<_, i64>(4)?.max(0) as usize,
+                })
+            },
+        )?;
+
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn random_history_track(
+        &self,
+        guild_id: serenity::GuildId,
+        requested_by: serenity::UserId,
+        exclude_url: Option<&str>,
+    ) -> Result<Option<Track>, Error> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "
+            SELECT title, url, duration_secs, thumbnail
+            FROM track_history
+            WHERE guild_id = ?1
+                AND (?2 IS NULL OR url != ?2)
+            ORDER BY RANDOM()
+            LIMIT 1
+            ",
+        )?;
+
+        let track = stmt
+            .query_row(
+                params![guild_id.get().to_string(), exclude_url],
+                |row| {
+                    let duration_secs = row
+                        .get::<_, Option<i64>>(2)?
+                        .and_then(|duration| u64::try_from(duration).ok());
+
+                    Ok(Track {
+                        title: row.get(0)?,
+                        url: row.get(1)?,
+                        duration_secs,
+                        requested_by,
+                        thumbnail: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+
+        Ok(track)
     }
 
     pub fn save_playlist(

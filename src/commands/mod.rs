@@ -1,3 +1,4 @@
+pub mod autoplay;
 pub mod leave;
 pub mod now;
 pub mod play;

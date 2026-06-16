@@ -42,6 +42,7 @@ async fn main() -> Result<(), Error> {
             commands::queue::queue(),
             commands::now::now(),
             commands::leave::leave(),
+            commands::autoplay::autoplay(),
             commands::volume::volume(),
             commands::shuffle::shuffle(),
             commands::playlist::playlist(),
