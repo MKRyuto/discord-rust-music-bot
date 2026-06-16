@@ -20,34 +20,35 @@ pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> Cre
 
     if let Some(track) = &state.now_playing {
         let status = if state.is_paused {
-            "⏸ Paused"
+            "Paused"
         } else {
-            "▶ Playing"
+            "Playing"
         };
 
-        embed = embed.title("🎵 Music Player").description(format!(
-            "{status}\n\n**{}**\nDurasi: `{}`\nRequested by: <@{}>\n\nQueue: `{}` lagu\nLoop: `{}`",
+        embed = embed.title("Music Player").description(format!(
+            "{status}\n\n**{}**\nDuration: `{}`\nRequested by: <@{}>\n\nQueue: `{}` track(s)\nLoop: `{}`\nVolume: `{}%`",
             track.title,
             track.duration_label(),
             track.requested_by.get(),
             state.queue.len(),
             state.loop_mode.label(),
+            state.volume_percent,
         ));
 
         if let Some(thumbnail) = &track.thumbnail {
             embed = embed.thumbnail(thumbnail);
         }
     } else {
-        embed = embed.title("🎵 Music Player").description(
-            "Tidak ada lagu yang sedang diputar.\n\nGunakan `/play <url atau judul lagu>`.",
-        );
+        embed = embed
+            .title("Music Player")
+            .description("Nothing is playing.\n\nUse `/play <url or song title>`.");
     }
 
     embed
 }
 
 pub fn build_player_buttons(is_paused: bool, loop_label: &str) -> Vec<CreateActionRow> {
-    let pause_label = if is_paused { "▶ Resume" } else { "⏸ Pause" };
+    let pause_label = if is_paused { "Resume" } else { "Pause" };
 
     vec![
         CreateActionRow::Buttons(vec![
@@ -55,21 +56,21 @@ pub fn build_player_buttons(is_paused: bool, loop_label: &str) -> Vec<CreateActi
                 .label(pause_label)
                 .style(ButtonStyle::Primary),
             CreateButton::new(BTN_SKIP)
-                .label("⏭ Skip")
+                .label("Skip")
                 .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_STOP)
-                .label("⏹ Stop")
+                .label("Stop")
                 .style(ButtonStyle::Danger),
         ]),
         CreateActionRow::Buttons(vec![
             CreateButton::new(BTN_QUEUE)
-                .label("📜 Queue")
+                .label("Queue")
                 .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_LOOP)
-                .label(format!("🔁 Loop: {loop_label}"))
+                .label(format!("Loop: {loop_label}"))
                 .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_REFRESH)
-                .label("🔄 Refresh")
+                .label("Refresh")
                 .style(ButtonStyle::Secondary),
         ]),
     ]
@@ -84,7 +85,6 @@ pub async fn build_player_components(
     build_player_buttons(state.is_paused, state.loop_mode.label())
 }
 
-/// Kirim panel baru, atau update message lama kalau masih ada.
 pub async fn send_or_update_player_panel(
     ctx: &serenity::Context,
     data: &Data,

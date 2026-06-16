@@ -20,6 +20,51 @@ fn youtube_dl_for(data: &Data, query_or_url: String) -> YoutubeDl<'static> {
     }
 }
 
+pub async fn ensure_guild_settings(data: &Data, guild_id: serenity::GuildId) -> Result<(), Error> {
+    let should_load = {
+        let state_lock = data.music.get(guild_id).await;
+        let state = state_lock.lock().await;
+        !state.volume_loaded
+    };
+
+    if should_load {
+        let volume_percent = data.db.guild_volume(guild_id)?;
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        state.volume_percent = volume_percent;
+        state.volume_loaded = true;
+    }
+
+    Ok(())
+}
+
+pub async fn set_volume(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+    volume_percent: u8,
+) -> Result<(), Error> {
+    data.db.set_guild_volume(guild_id, volume_percent)?;
+
+    let current_handle = {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        state.volume_percent = volume_percent;
+        state.volume_loaded = true;
+        state.current_handle.clone()
+    };
+
+    if let Some(handle) = current_handle {
+        handle.set_volume(volume_percent as f32 / 100.0)?;
+    }
+
+    player_panel::update_player_message(ctx, data, guild_id)
+        .await
+        .ok();
+
+    Ok(())
+}
+
 /// Cari voice channel user di guild.
 pub fn user_voice_channel(
     ctx: &serenity::Context,
@@ -122,6 +167,8 @@ pub async fn play_track(
     guild_id: serenity::GuildId,
     track: Track,
 ) -> Result<(), Error> {
+    ensure_guild_settings(data, guild_id).await?;
+
     let manager = songbird::get(ctx)
         .await
         .ok_or("Songbird voice client belum tersedia.")?
@@ -140,6 +187,9 @@ pub async fn play_track(
 
     {
         let state_lock = data.music.get(guild_id).await;
+        let state = state_lock.lock().await;
+        track_handle.set_volume(state.volume_percent as f32 / 100.0)?;
+        drop(state);
         let mut state = state_lock.lock().await;
         state.current_handle = Some(track_handle.clone());
     }

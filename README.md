@@ -1,6 +1,6 @@
 # Discord Rust Music Bot
 
-> Version 1.0.0 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, and yt-dlp.
+> Version 1.1.0 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
 
 Discord Rust Music Bot is a slash-command music bot with per-server queues, interactive embeds, button controls, and YouTube/search playback. It is designed as a clean Rust codebase for a practical Discord music bot, not a giant all-in-one framework.
 
@@ -12,6 +12,9 @@ Discord Rust Music Bot is a slash-command music bot with per-server queues, inte
 - Voice playback through Songbird
 - Player panel with pause, resume, skip, stop, loop, queue, and refresh
 - Queue panel with paginated navigation
+- Volume control with persisted guild settings
+- Queue shuffle
+- Saved playlists backed by SQLite
 - Common audio container/codec support through Symphonia
 - Development-friendly guild command registration with `DEV_GUILD_ID`
 
@@ -35,6 +38,7 @@ Core crate versions:
 | `songbird` | `0.6.0` |
 | `reqwest` | `0.12` |
 | `symphonia` | `0.5.5` |
+| `rusqlite` | `0.37` |
 | `tokio` | `1.x` |
 
 `reqwest` and `symphonia` intentionally stay on versions compatible with Songbird 0.6.
@@ -105,11 +109,14 @@ Set:
 ```env
 DISCORD_TOKEN=your_discord_bot_token_here
 DEV_GUILD_ID=
+MUSIC_DB_PATH=music_bot.db
 ```
 
 `DEV_GUILD_ID` is optional. When set, commands register quickly to one server. When empty, commands register globally and can take longer to appear.
 
-Never commit `.env`. The repository `.gitignore` excludes it.
+`MUSIC_DB_PATH` is optional and defaults to `music_bot.db`. The database stores saved playlists and per-guild volume settings.
+
+Never commit `.env` or local database files. The repository `.gitignore` excludes them.
 
 ## Running
 
@@ -148,6 +155,12 @@ winget upgrade Gyan.FFmpeg.Essentials
 | `/queue` | Show the queue panel. |
 | `/now` | Show the player panel. |
 | `/leave` | Stop playback and disconnect from voice. |
+| `/volume percent:<0-200>` | Set playback volume for the current server. |
+| `/shuffle` | Shuffle the queued tracks. |
+| `/playlist save name:<text>` | Save now playing and the queue as a playlist. |
+| `/playlist load name:<text>` | Load a saved playlist into the queue. |
+| `/playlist list` | Show saved playlists for the current server. |
+| `/playlist delete name:<text>` | Delete a saved playlist. |
 
 ## Controls
 
@@ -159,6 +172,7 @@ Player panel:
 - Queue
 - Loop mode
 - Refresh
+- Volume is controlled with `/volume`
 
 Queue panel:
 
@@ -175,14 +189,18 @@ src/
 |-- commands/
 |   |-- leave.rs
 |   |-- now.rs
+|   |-- playlist.rs
 |   |-- play.rs
-|   `-- queue.rs
+|   |-- queue.rs
+|   |-- shuffle.rs
+|   `-- volume.rs
 |-- interactions/
 |   `-- buttons.rs
 |-- music/
 |   |-- player.rs
 |   |-- state.rs
 |   `-- track.rs
+|-- storage.rs
 `-- ui/
     |-- player_panel.rs
     `-- queue_panel.rs
