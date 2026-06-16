@@ -1,8 +1,10 @@
 pub mod autoplay;
+pub mod history;
 pub mod leave;
 pub mod now;
 pub mod play;
 pub mod playlist;
+pub mod playnow;
 pub mod queue;
 pub mod shuffle;
 pub mod volume;

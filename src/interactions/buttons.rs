@@ -1,6 +1,7 @@
 use poise::serenity_prelude as serenity;
 use serenity::{
-    CreateInteractionResponse, CreateInteractionResponseMessage, FullEvent, Interaction,
+    ComponentInteractionDataKind, CreateInteractionResponse, CreateInteractionResponseMessage,
+    FullEvent, Interaction,
 };
 
 use crate::{
@@ -108,10 +109,35 @@ pub async fn handle_event(
                 state.queue_page = 0;
             }
 
+            player::persist_queue(data, guild_id).await;
             update_component_to_queue(ctx, data, component, guild_id).await?;
             player_panel::update_player_message(ctx, data, guild_id)
                 .await
                 .ok();
+        }
+        queue_panel::SELECT_REMOVE => {
+            let ComponentInteractionDataKind::StringSelect { values } = &component.data.kind else {
+                return Ok(());
+            };
+
+            let Some(position) = values.first().and_then(|value| value.parse::<usize>().ok())
+            else {
+                return Ok(());
+            };
+
+            let removed = player::remove_queued_track(data, guild_id, position).await;
+            update_component_to_queue(ctx, data, component, guild_id).await?;
+            player_panel::update_player_message(ctx, data, guild_id)
+                .await
+                .ok();
+
+            if let Some(track) = removed {
+                component
+                    .channel_id
+                    .say(ctx, format!("Removed `{position}.` **{}**", track.title))
+                    .await
+                    .ok();
+            }
         }
         _ => {}
     }
@@ -181,6 +207,13 @@ async fn update_component_to_player(
         )
         .await?;
 
+    {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        state.player_message_id = Some(component.message.id);
+        state.player_channel_id = Some(component.channel_id);
+    }
+
     Ok(())
 }
 
@@ -202,6 +235,13 @@ async fn update_component_to_queue(
             ),
         )
         .await?;
+
+    {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        state.queue_message_id = Some(component.message.id);
+        state.queue_channel_id = Some(component.channel_id);
+    }
 
     Ok(())
 }

@@ -9,6 +9,8 @@ use crate::music::track::Track;
 use crate::ui::player_panel;
 use crate::{Data, Error};
 
+const IDLE_DISCONNECT_AFTER: Duration = Duration::from_secs(60);
+
 fn is_http_url(input: &str) -> bool {
     url::Url::parse(input)
         .map(|url| matches!(url.scheme(), "http" | "https"))
@@ -99,6 +101,9 @@ pub async fn shuffle_queue(data: &Data, guild_id: serenity::GuildId) -> usize {
     let total = tracks.len();
     state.queue = tracks.into();
     state.queue_page = 0;
+    drop(state);
+
+    persist_queue(data, guild_id).await;
     total
 }
 
@@ -115,6 +120,79 @@ fn shuffle_tracks<T>(tracks: &mut [T]) {
         let swap_idx = (seed as usize) % (idx + 1);
         tracks.swap(idx, swap_idx);
     }
+}
+
+pub async fn persist_queue(data: &Data, guild_id: serenity::GuildId) {
+    let (now_playing, queue) = {
+        let state_lock = data.music.get(guild_id).await;
+        let state = state_lock.lock().await;
+        (state.now_playing.clone(), state.queue.clone())
+    };
+
+    if let Err(err) = data.db.save_queue(guild_id, &now_playing, &queue) {
+        tracing::warn!("failed to persist queue: {err:?}");
+    }
+}
+
+pub async fn remove_queued_track(
+    data: &Data,
+    guild_id: serenity::GuildId,
+    position: usize,
+) -> Option<Track> {
+    if position == 0 {
+        return None;
+    }
+
+    let removed = {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        let index = position - 1;
+        let removed = state.queue.remove(index);
+        if removed.is_some() {
+            state.queue_page = 0;
+        }
+        removed
+    };
+
+    if removed.is_some() {
+        persist_queue(data, guild_id).await;
+    }
+
+    removed
+}
+
+pub async fn move_queued_track(
+    data: &Data,
+    guild_id: serenity::GuildId,
+    from_position: usize,
+    to_position: usize,
+) -> bool {
+    if from_position == 0 || to_position == 0 {
+        return false;
+    }
+
+    let moved = {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        let len = state.queue.len();
+        if from_position > len || to_position > len {
+            return false;
+        }
+
+        let Some(track) = state.queue.remove(from_position - 1) else {
+            return false;
+        };
+
+        state.queue.insert(to_position - 1, track);
+        state.queue_page = 0;
+        true
+    };
+
+    if moved {
+        persist_queue(data, guild_id).await;
+    }
+
+    moved
 }
 
 /// Cari voice channel user di guild.
@@ -208,6 +286,36 @@ pub async fn start_if_idle(
     player_panel::update_player_message(ctx, data, guild_id)
         .await
         .ok();
+    persist_queue(data, guild_id).await;
+
+    Ok(())
+}
+
+pub async fn play_now(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+    track: Track,
+) -> Result<(), Error> {
+    let previous_handle = {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        let previous_handle = state.current_handle.take();
+        state.suppress_next_end = previous_handle.is_some();
+        state.now_playing = Some(track.clone());
+        state.is_paused = false;
+        previous_handle
+    };
+
+    if let Some(handle) = previous_handle {
+        handle.stop().ok();
+    }
+
+    play_track(ctx, data, guild_id, track).await?;
+    player_panel::update_player_message(ctx, data, guild_id)
+        .await
+        .ok();
+    persist_queue(data, guild_id).await;
 
     Ok(())
 }
@@ -309,6 +417,14 @@ fn spawn_prepare_timeout(
             "track prepare timed out; skipping"
         );
 
+        notify_playback_issue(
+            &ctx,
+            &data,
+            guild_id,
+            format!("Track **{title}** stuck while preparing, skipping to the next track."),
+        )
+        .await;
+
         {
             let state_lock = data.music.get(guild_id).await;
             let mut music_state = state_lock.lock().await;
@@ -327,6 +443,53 @@ fn spawn_prepare_timeout(
 
         if let Err(err) = advance_queue(&ctx, &data, guild_id).await {
             tracing::warn!("advance queue after prepare timeout failed: {err:?}");
+        }
+    });
+}
+
+async fn notify_playback_issue(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+    message: String,
+) {
+    let channel_id = {
+        let state_lock = data.music.get(guild_id).await;
+        let state = state_lock.lock().await;
+        state.player_channel_id.or(state.queue_channel_id)
+    };
+
+    if let Some(channel_id) = channel_id {
+        if let Err(err) = channel_id.say(ctx, message).await {
+            tracing::warn!("failed to send playback issue message: {err:?}");
+        }
+    }
+}
+
+fn spawn_idle_disconnect(ctx: serenity::Context, data: Data, guild_id: serenity::GuildId) {
+    tokio::spawn(async move {
+        tokio::time::sleep(IDLE_DISCONNECT_AFTER).await;
+
+        let should_disconnect = {
+            let state_lock = data.music.get(guild_id).await;
+            let state = state_lock.lock().await;
+            state.now_playing.is_none() && state.queue.is_empty() && state.current_handle.is_none()
+        };
+
+        if !should_disconnect {
+            return;
+        }
+
+        let Some(manager) = songbird::get(&ctx).await else {
+            tracing::warn!("songbird voice client unavailable during idle disconnect");
+            return;
+        };
+
+        if manager.get(guild_id).is_some() {
+            tracing::info!("disconnecting from voice after idle timeout");
+            if let Err(err) = manager.remove(guild_id).await {
+                tracing::warn!("idle voice disconnect failed: {err:?}");
+            }
         }
     });
 }
@@ -397,6 +560,14 @@ impl EventHandler for TrackErrorNotifier {
                 state.suppress_next_end = true;
             }
         }
+
+        notify_playback_issue(
+            &self.ctx,
+            &self.data,
+            self.guild_id,
+            "Current track failed to play, skipping to the next track.".to_string(),
+        )
+        .await;
 
         if let Err(err) = advance_queue(&self.ctx, &self.data, self.guild_id).await {
             tracing::warn!("advance queue after track error failed: {err:?}");
@@ -496,7 +667,7 @@ pub async fn advance_queue(
         next_track
     };
 
-    if let Some(track) = next_track {
+    let started_track = if let Some(track) = next_track {
         {
             let state_lock = data.music.get(guild_id).await;
             let mut state = state_lock.lock().await;
@@ -504,11 +675,20 @@ pub async fn advance_queue(
         }
 
         play_track(ctx, data, guild_id, track).await?;
-    }
+        true
+    } else {
+        false
+    };
 
     player_panel::update_player_message(ctx, data, guild_id)
         .await
         .ok();
+
+    if !started_track {
+        spawn_idle_disconnect(ctx.clone(), data.clone(), guild_id);
+    }
+
+    persist_queue(data, guild_id).await;
 
     Ok(())
 }
@@ -560,6 +740,9 @@ pub async fn stop(
         .await
         .ok();
 
+    spawn_idle_disconnect(ctx.clone(), data.clone(), guild_id);
+    persist_queue(data, guild_id).await;
+
     Ok(())
 }
 
@@ -600,6 +783,7 @@ pub async fn skip(
     player_panel::update_player_message(ctx, data, guild_id)
         .await
         .ok();
+    persist_queue(data, guild_id).await;
 
     Ok(())
 }

@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -40,7 +41,11 @@ impl Database {
     }
 
     fn init(&self) -> Result<(), Error> {
-        if let Some(parent) = self.path.parent().filter(|path| !path.as_os_str().is_empty()) {
+        if let Some(parent) = self
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
             std::fs::create_dir_all(parent)?;
         }
 
@@ -87,6 +92,18 @@ impl Database {
                 play_count INTEGER NOT NULL DEFAULT 1,
                 last_played_at INTEGER NOT NULL,
                 PRIMARY KEY (guild_id, url)
+            );
+
+            CREATE TABLE IF NOT EXISTS queue_tracks (
+                guild_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL,
+                duration_secs INTEGER,
+                requested_by TEXT NOT NULL,
+                thumbnail TEXT,
+                is_now_playing INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, position)
             );
             ",
         )?;
@@ -173,11 +190,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn record_history(
-        &self,
-        guild_id: serenity::GuildId,
-        track: &Track,
-    ) -> Result<(), Error> {
+    pub fn record_history(&self, guild_id: serenity::GuildId, track: &Track) -> Result<(), Error> {
         let conn = self.connect()?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
 
@@ -252,6 +265,39 @@ impl Database {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    pub fn top_history(
+        &self,
+        guild_id: serenity::GuildId,
+        limit: usize,
+    ) -> Result<Vec<HistoryTrack>, Error> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "
+            SELECT title, url, duration_secs, thumbnail, play_count
+            FROM track_history
+            WHERE guild_id = ?1
+            ORDER BY play_count DESC, last_played_at DESC
+            LIMIT ?2
+            ",
+        )?;
+
+        let rows = stmt.query_map(params![guild_id.get().to_string(), limit as i64], |row| {
+            let duration_secs = row
+                .get::<_, Option<i64>>(2)?
+                .and_then(|duration| u64::try_from(duration).ok());
+
+            Ok(HistoryTrack {
+                title: row.get(0)?,
+                url: row.get(1)?,
+                duration_secs,
+                thumbnail: row.get(3)?,
+                play_count: row.get::<_, i64>(4)?.max(0) as usize,
+            })
+        })?;
+
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     pub fn random_history_track(
         &self,
         guild_id: serenity::GuildId,
@@ -271,25 +317,130 @@ impl Database {
         )?;
 
         let track = stmt
-            .query_row(
-                params![guild_id.get().to_string(), exclude_url],
-                |row| {
-                    let duration_secs = row
-                        .get::<_, Option<i64>>(2)?
-                        .and_then(|duration| u64::try_from(duration).ok());
+            .query_row(params![guild_id.get().to_string(), exclude_url], |row| {
+                let duration_secs = row
+                    .get::<_, Option<i64>>(2)?
+                    .and_then(|duration| u64::try_from(duration).ok());
 
-                    Ok(Track {
-                        title: row.get(0)?,
-                        url: row.get(1)?,
-                        duration_secs,
-                        requested_by,
-                        thumbnail: row.get(3)?,
-                    })
-                },
-            )
+                Ok(Track {
+                    title: row.get(0)?,
+                    url: row.get(1)?,
+                    duration_secs,
+                    requested_by,
+                    thumbnail: row.get(3)?,
+                })
+            })
             .optional()?;
 
         Ok(track)
+    }
+
+    pub fn save_queue(
+        &self,
+        guild_id: serenity::GuildId,
+        now_playing: &Option<Track>,
+        queue: &VecDeque<Track>,
+    ) -> Result<(), Error> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        let guild_id_raw = guild_id.get().to_string();
+
+        tx.execute(
+            "DELETE FROM queue_tracks WHERE guild_id = ?1",
+            params![guild_id_raw],
+        )?;
+
+        for (position, track) in now_playing.iter().chain(queue.iter()).enumerate() {
+            tx.execute(
+                "
+                INSERT INTO queue_tracks (
+                    guild_id,
+                    position,
+                    title,
+                    url,
+                    duration_secs,
+                    requested_by,
+                    thumbnail,
+                    is_now_playing
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ",
+                params![
+                    guild_id_raw,
+                    position as i64,
+                    track.title,
+                    track.url,
+                    track.duration_secs.map(|duration| duration as i64),
+                    track.requested_by.get().to_string(),
+                    track.thumbnail,
+                    if position == 0 && now_playing.is_some() {
+                        1
+                    } else {
+                        0
+                    },
+                ],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn load_all_queues(
+        &self,
+    ) -> Result<HashMap<serenity::GuildId, (Option<Track>, VecDeque<Track>)>, Error> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "
+            SELECT guild_id, title, url, duration_secs, requested_by, thumbnail, is_now_playing
+            FROM queue_tracks
+            ORDER BY guild_id ASC, position ASC
+            ",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let guild_id_raw: String = row.get(0)?;
+            let duration_secs = row
+                .get::<_, Option<i64>>(3)?
+                .and_then(|duration| u64::try_from(duration).ok());
+            let requested_by_raw: String = row.get(4)?;
+
+            Ok((
+                guild_id_raw,
+                Track {
+                    title: row.get(1)?,
+                    url: row.get(2)?,
+                    duration_secs,
+                    requested_by: serenity::UserId::new(
+                        requested_by_raw.parse::<u64>().unwrap_or_default(),
+                    ),
+                    thumbnail: row.get(5)?,
+                },
+                row.get::<_, i64>(6)? != 0,
+            ))
+        })?;
+
+        let mut queues: HashMap<serenity::GuildId, (Option<Track>, VecDeque<Track>)> =
+            HashMap::new();
+
+        for row in rows {
+            let (guild_id_raw, track, is_now_playing) = row?;
+            let Ok(guild_id) = guild_id_raw.parse::<u64>() else {
+                continue;
+            };
+
+            let entry = queues
+                .entry(serenity::GuildId::new(guild_id))
+                .or_insert_with(|| (None, VecDeque::new()));
+
+            if is_now_playing && entry.0.is_none() {
+                entry.0 = Some(track);
+            } else {
+                entry.1.push_back(track);
+            }
+        }
+
+        Ok(queues)
     }
 
     pub fn save_playlist(

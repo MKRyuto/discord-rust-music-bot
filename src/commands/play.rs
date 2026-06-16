@@ -9,7 +9,7 @@ use crate::{
     Ctx, Error,
 };
 
-async fn autocomplete_track(ctx: Ctx<'_>, partial: &str) -> Vec<serenity::AutocompleteChoice> {
+pub async fn autocomplete_track(ctx: Ctx<'_>, partial: &str) -> Vec<serenity::AutocompleteChoice> {
     let Some(guild_id) = ctx.guild_id() else {
         return Vec::new();
     };
@@ -67,7 +67,9 @@ pub async fn play(
     ctx.say("Lagi nyiapin lagu...").await.ok();
 
     if let Err(err) = player::join_user_channel(ctx.serenity_context(), guild_id, user_id).await {
-        ctx.say(format!("Gagal join voice channel: {err}")).await.ok();
+        ctx.say(format!("Gagal join voice channel: {err}"))
+            .await
+            .ok();
         return Ok(());
     }
 
@@ -94,6 +96,7 @@ pub async fn play(
         state.queue.push_back(track);
         state.player_channel_id = Some(channel_id);
     }
+    player::persist_queue(ctx.data(), guild_id).await;
 
     if let Err(err) = player::start_if_idle(ctx.serenity_context(), ctx.data(), guild_id).await {
         ctx.say(format!(

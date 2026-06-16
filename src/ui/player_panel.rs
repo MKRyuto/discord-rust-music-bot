@@ -24,11 +24,7 @@ pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> Cre
     let mut embed = CreateEmbed::new();
 
     if let Some(track) = &state.now_playing {
-        let status = if state.is_paused {
-            "Paused"
-        } else {
-            "Playing"
-        };
+        let status = if state.is_paused { "Paused" } else { "Playing" };
 
         embed = embed.title("Music Player").description(format!(
             "{status}\n\n**{}**\nDuration: `{}`\nRequested by: <@{}>\n\nQueue: `{}` track(s)\nLoop: `{}`\nVolume: `{}%`\nAutoplay: `{}`",

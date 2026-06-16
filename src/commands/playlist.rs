@@ -1,6 +1,6 @@
 use crate::{
     music::{player, track::Track},
-    ui::player_panel,
+    ui::{player_panel, queue_panel},
     Ctx, Error,
 };
 
@@ -61,7 +61,10 @@ pub async fn load(
     let channel_id = ctx.channel_id();
     let user_id = ctx.author().id;
     let name = normalize_name(&name)?;
-    let tracks = ctx.data().db.load_playlist(guild_id, &name, ctx.author().id)?;
+    let tracks = ctx
+        .data()
+        .db
+        .load_playlist(guild_id, &name, ctx.author().id)?;
 
     if tracks.is_empty() {
         ctx.say(format!("Playlist `{name}` kosong atau tidak ditemukan."))
@@ -70,7 +73,9 @@ pub async fn load(
     }
 
     if let Err(err) = player::join_user_channel(ctx.serenity_context(), guild_id, user_id).await {
-        ctx.say(format!("Gagal join voice channel: {err}")).await.ok();
+        ctx.say(format!("Gagal join voice channel: {err}"))
+            .await
+            .ok();
         return Ok(());
     }
 
@@ -80,6 +85,7 @@ pub async fn load(
         state.queue.extend(tracks.clone());
         state.player_channel_id = Some(channel_id);
     }
+    player::persist_queue(ctx.data(), guild_id).await;
 
     player::start_if_idle(ctx.serenity_context(), ctx.data(), guild_id).await?;
     player_panel::send_or_update_player_panel(
@@ -90,6 +96,9 @@ pub async fn load(
     )
     .await
     .ok();
+    queue_panel::update_queue_message(ctx.serenity_context(), ctx.data(), guild_id)
+        .await
+        .ok();
 
     ctx.say(format!(
         "Loaded playlist `{name}` with `{}` track(s).",
@@ -143,7 +152,8 @@ pub async fn delete(
     if ctx.data().db.delete_playlist(guild_id, &name)? {
         ctx.say(format!("Deleted playlist `{name}`.")).await?;
     } else {
-        ctx.say(format!("Playlist `{name}` tidak ditemukan.")).await?;
+        ctx.say(format!("Playlist `{name}` tidak ditemukan."))
+            .await?;
     }
 
     Ok(())

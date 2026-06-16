@@ -1,6 +1,6 @@
 # Discord Rust Music Bot
 
-> Version 1.2.0 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
+> Version 1.3.0 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
 
 Discord Rust Music Bot is a slash-command music bot with per-server queues, interactive embeds, button controls, and YouTube/search playback. It is designed as a clean Rust codebase for a practical Discord music bot, not a giant all-in-one framework.
 
@@ -11,6 +11,11 @@ Discord Rust Music Bot is a slash-command music bot with per-server queues, inte
 - YouTube URL and keyword search playback through `yt-dlp`
 - Voice playback through Songbird
 - Playback recovery for failed or stuck tracks
+- Automatic voice disconnect after 60 seconds of idle playback
+- Queue persistence across bot restarts
+- Queue remove and move management commands
+- Top played track history command
+- Play-now command for immediate playback
 - Player panel with pause, resume, skip, stop, loop, queue, volume, shuffle, playlists, and refresh
 - Queue panel with paginated navigation
 - Volume control with persisted guild settings
@@ -155,7 +160,13 @@ winget upgrade Gyan.FFmpeg.Essentials
 | Command | Description |
 | --- | --- |
 | `/play query_or_url:<text>` | Play a YouTube URL or search keyword. Queues the track if something is already playing. |
+| `/playnow query_or_url:<text>` | Play a track immediately while keeping the existing queue. |
+| `/history limit:<number>` | Show the most played tracks in the current server. |
 | `/queue` | Show the queue panel. |
+| `/queue show` | Show the queue panel. |
+| `/queue clear` | Clear queued tracks. |
+| `/queue remove position:<number>` | Remove a queued track by queue number. |
+| `/queue move from:<number> to:<number>` | Move a queued track to another queue position. |
 | `/now` | Show the player panel. |
 | `/leave` | Stop playback and disconnect from voice. |
 | `/autoplay enabled:<true/false>` | Toggle history-based autoplay for the current server. |
@@ -187,6 +198,7 @@ Queue panel:
 - Next Page
 - Clear
 - Player
+- Remove track select menu
 
 ## Project Structure
 
@@ -194,10 +206,13 @@ Queue panel:
 src/
 |-- main.rs
 |-- commands/
+|   |-- history.rs
 |   |-- leave.rs
 |   |-- now.rs
+|   |-- autoplay.rs
 |   |-- playlist.rs
 |   |-- play.rs
+|   |-- playnow.rs
 |   |-- queue.rs
 |   |-- shuffle.rs
 |   `-- volume.rs

@@ -46,6 +46,8 @@ pub struct GuildMusicState {
     pub volume_loaded: bool,
     pub player_message_id: Option<serenity::MessageId>,
     pub player_channel_id: Option<serenity::ChannelId>,
+    pub queue_message_id: Option<serenity::MessageId>,
+    pub queue_channel_id: Option<serenity::ChannelId>,
     pub queue_page: usize,
 }
 
@@ -62,6 +64,8 @@ impl Default for GuildMusicState {
             volume_loaded: false,
             player_message_id: None,
             player_channel_id: None,
+            queue_message_id: None,
+            queue_channel_id: None,
             queue_page: 0,
         }
     }
@@ -79,5 +83,25 @@ impl MusicStore {
         map.entry(guild_id)
             .or_insert_with(|| Arc::new(Mutex::new(GuildMusicState::default())))
             .clone()
+    }
+
+    pub async fn restore_queue(
+        &self,
+        guild_id: serenity::GuildId,
+        now_playing: Option<Track>,
+        mut queue: VecDeque<Track>,
+    ) {
+        let state_lock = self.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        if let Some(track) = now_playing {
+            queue.push_front(track);
+        }
+
+        state.now_playing = None;
+        state.queue = queue;
+        state.current_handle = None;
+        state.is_paused = false;
+        state.suppress_next_end = false;
+        state.queue_page = 0;
     }
 }

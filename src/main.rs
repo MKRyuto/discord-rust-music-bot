@@ -39,6 +39,8 @@ async fn main() -> Result<(), Error> {
     let options = poise::FrameworkOptions {
         commands: vec![
             commands::play::play(),
+            commands::playnow::playnow(),
+            commands::history::history(),
             commands::queue::queue(),
             commands::now::now(),
             commands::leave::leave(),
@@ -80,8 +82,15 @@ async fn main() -> Result<(), Error> {
                     tracing::info!("Registered slash commands globally");
                 }
 
+                let music = Arc::new(MusicStore::default());
+                for (guild_id, (now_playing, queue)) in db.load_all_queues()? {
+                    let restored_count = queue.len() + usize::from(now_playing.is_some());
+                    music.restore_queue(guild_id, now_playing, queue).await;
+                    tracing::info!(guild_id = %guild_id, restored_count, "restored persisted queue");
+                }
+
                 Ok(Data {
-                    music: Arc::new(MusicStore::default()),
+                    music,
                     http_client: reqwest::Client::new(),
                     db,
                 })
