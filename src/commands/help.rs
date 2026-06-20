@@ -10,7 +10,7 @@ pub async fn help(ctx: Ctx<'_>) -> Result<(), Error> {
         .description("Slash command utama buat playback, queue, playlist, dan server control.")
         .field(
             "Playback",
-            "`/play`, `/playnow`, `/now`, `/voteskip`, `/leave`",
+            "`/play`, `/playnow`, `/replay`, `/previous`, `/now`, `/voteskip`, `/leave`",
             false,
         )
         .field(
@@ -20,12 +20,12 @@ pub async fn help(ctx: Ctx<'_>) -> Result<(), Error> {
         )
         .field(
             "Settings",
-            "`/volume`, `/autoplay`, `/normalize`, `/config show`, `/config cooldown`, `/config maxqueue`, `/config voteskip`, `/config normalize-cap`, `/djrole add`, `/djrole remove`, `/djrole list`",
+            "`/volume`, `/autoplay`, `/normalize`, `/config show`, `/config cooldown`, `/config maxqueue`, `/config voteskip`, `/config normalize-cap`, `/config allow-channel`, `/config block`, `/djrole add`, `/djrole remove`, `/djrole list`",
             false,
         )
         .field(
             "Library",
-            "`/playlist save`, `/playlist load`, `/playlist list`, `/playlist delete`, `/history`",
+            "`/playlist save`, `/playlist append`, `/playlist load`, `/playlist rename`, `/playlist list`, `/playlist delete`, `/history`, `/stats server`, `/stats user`",
             false,
         )
         .field(

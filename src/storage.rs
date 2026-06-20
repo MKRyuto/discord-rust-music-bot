@@ -29,6 +29,19 @@ pub struct HistoryTrack {
     pub play_count: usize,
 }
 
+#[derive(Clone, Debug)]
+pub struct UserStats {
+    pub user_id: serenity::UserId,
+    pub tracks_played: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct ServerStats {
+    pub unique_tracks: usize,
+    pub total_plays: usize,
+    pub playlists: usize,
+}
+
 impl Database {
     pub fn new(path: impl Into<PathBuf>) -> Result<Self, Error> {
         let db = Self { path: path.into() };
@@ -71,6 +84,18 @@ impl Database {
                 PRIMARY KEY (guild_id, role_id)
             );
 
+            CREATE TABLE IF NOT EXISTS allowed_channels (
+                guild_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                PRIMARY KEY (guild_id, channel_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS blocked_terms (
+                guild_id TEXT NOT NULL,
+                term TEXT NOT NULL,
+                PRIMARY KEY (guild_id, term)
+            );
+
             CREATE TABLE IF NOT EXISTS playlists (
                 guild_id TEXT NOT NULL,
                 name TEXT NOT NULL,
@@ -103,6 +128,13 @@ impl Database {
                 play_count INTEGER NOT NULL DEFAULT 1,
                 last_played_at INTEGER NOT NULL,
                 PRIMARY KEY (guild_id, url)
+            );
+
+            CREATE TABLE IF NOT EXISTS user_track_stats (
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tracks_played INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id)
             );
 
             CREATE TABLE IF NOT EXISTS queue_tracks (
@@ -310,6 +342,117 @@ impl Database {
         Ok(changed > 0)
     }
 
+    pub fn allowed_channels(
+        &self,
+        guild_id: serenity::GuildId,
+    ) -> Result<Vec<serenity::ChannelId>, Error> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "
+            SELECT channel_id
+            FROM allowed_channels
+            WHERE guild_id = ?1
+            ORDER BY channel_id ASC
+            ",
+        )?;
+
+        let rows = stmt.query_map(params![guild_id.get().to_string()], |row| {
+            let raw: String = row.get(0)?;
+            Ok(raw.parse::<u64>().ok().map(serenity::ChannelId::new))
+        })?;
+
+        Ok(rows
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect())
+    }
+
+    pub fn add_allowed_channel(
+        &self,
+        guild_id: serenity::GuildId,
+        channel_id: serenity::ChannelId,
+    ) -> Result<(), Error> {
+        let conn = self.connect()?;
+        conn.execute(
+            "
+            INSERT OR IGNORE INTO allowed_channels (guild_id, channel_id)
+            VALUES (?1, ?2)
+            ",
+            params![guild_id.get().to_string(), channel_id.get().to_string()],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn remove_allowed_channel(
+        &self,
+        guild_id: serenity::GuildId,
+        channel_id: serenity::ChannelId,
+    ) -> Result<bool, Error> {
+        let conn = self.connect()?;
+        let changed = conn.execute(
+            "DELETE FROM allowed_channels WHERE guild_id = ?1 AND channel_id = ?2",
+            params![guild_id.get().to_string(), channel_id.get().to_string()],
+        )?;
+
+        Ok(changed > 0)
+    }
+
+    pub fn blocked_terms(&self, guild_id: serenity::GuildId) -> Result<Vec<String>, Error> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "
+            SELECT term
+            FROM blocked_terms
+            WHERE guild_id = ?1
+            ORDER BY term ASC
+            ",
+        )?;
+
+        let rows = stmt.query_map(params![guild_id.get().to_string()], |row| row.get(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn add_blocked_term(&self, guild_id: serenity::GuildId, term: &str) -> Result<(), Error> {
+        let conn = self.connect()?;
+        conn.execute(
+            "
+            INSERT OR IGNORE INTO blocked_terms (guild_id, term)
+            VALUES (?1, ?2)
+            ",
+            params![guild_id.get().to_string(), normalize_term(term)],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn remove_blocked_term(
+        &self,
+        guild_id: serenity::GuildId,
+        term: &str,
+    ) -> Result<bool, Error> {
+        let conn = self.connect()?;
+        let changed = conn.execute(
+            "DELETE FROM blocked_terms WHERE guild_id = ?1 AND term = ?2",
+            params![guild_id.get().to_string(), normalize_term(term)],
+        )?;
+
+        Ok(changed > 0)
+    }
+
+    pub fn is_blocked_query(
+        &self,
+        guild_id: serenity::GuildId,
+        query: &str,
+    ) -> Result<bool, Error> {
+        let query = query.to_lowercase();
+        Ok(self
+            .blocked_terms(guild_id)?
+            .iter()
+            .any(|term| !term.is_empty() && query.contains(term)))
+    }
+
     pub fn play_cooldown_secs(&self, guild_id: serenity::GuildId) -> Result<u64, Error> {
         Ok(self
             .guild_setting_i64(guild_id, "play_cooldown_secs", 10)?
@@ -438,7 +581,71 @@ impl Database {
             ],
         )?;
 
+        conn.execute(
+            "
+            INSERT INTO user_track_stats (guild_id, user_id, tracks_played)
+            VALUES (?1, ?2, 1)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                tracks_played = user_track_stats.tracks_played + 1
+            ",
+            params![
+                guild_id.get().to_string(),
+                track.requested_by.get().to_string()
+            ],
+        )?;
+
         Ok(())
+    }
+
+    pub fn user_stats(
+        &self,
+        guild_id: serenity::GuildId,
+        user_id: serenity::UserId,
+    ) -> Result<UserStats, Error> {
+        let conn = self.connect()?;
+        let tracks_played = conn
+            .query_row(
+                "
+                SELECT tracks_played
+                FROM user_track_stats
+                WHERE guild_id = ?1 AND user_id = ?2
+                ",
+                params![guild_id.get().to_string(), user_id.get().to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            .max(0) as usize;
+
+        Ok(UserStats {
+            user_id,
+            tracks_played,
+        })
+    }
+
+    pub fn server_stats(&self, guild_id: serenity::GuildId) -> Result<ServerStats, Error> {
+        let conn = self.connect()?;
+        let (unique_tracks, total_plays) = conn.query_row(
+            "
+            SELECT COUNT(*), COALESCE(SUM(play_count), 0)
+            FROM track_history
+            WHERE guild_id = ?1
+            ",
+            params![guild_id.get().to_string()],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+
+        let playlists = conn.query_row(
+            "SELECT COUNT(*) FROM playlists WHERE guild_id = ?1",
+            params![guild_id.get().to_string()],
+            |row| row.get::<_, i64>(0),
+        )?;
+
+        Ok(ServerStats {
+            unique_tracks: unique_tracks.max(0) as usize,
+            total_plays: total_plays.max(0) as usize,
+            playlists: playlists.max(0) as usize,
+        })
     }
 
     pub fn search_history(
@@ -718,6 +925,19 @@ impl Database {
         Ok(())
     }
 
+    pub fn append_playlist(
+        &self,
+        guild_id: serenity::GuildId,
+        name: &str,
+        created_by: serenity::UserId,
+        tracks: &[Track],
+    ) -> Result<usize, Error> {
+        let mut existing = self.load_playlist(guild_id, name, created_by)?;
+        existing.extend_from_slice(tracks);
+        self.save_playlist(guild_id, name, created_by, &existing)?;
+        Ok(existing.len())
+    }
+
     pub fn load_playlist(
         &self,
         guild_id: serenity::GuildId,
@@ -824,4 +1044,42 @@ impl Database {
 
         Ok(changed > 0)
     }
+
+    pub fn rename_playlist(
+        &self,
+        guild_id: serenity::GuildId,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<bool, Error> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        let guild_id_raw = guild_id.get().to_string();
+
+        let changed = tx.execute(
+            "
+            UPDATE playlists
+            SET name = ?3
+            WHERE guild_id = ?1 AND name = ?2
+            ",
+            params![guild_id_raw, old_name, new_name],
+        )?;
+
+        if changed > 0 {
+            tx.execute(
+                "
+                UPDATE playlist_tracks
+                SET playlist_name = ?3
+                WHERE guild_id = ?1 AND playlist_name = ?2
+                ",
+                params![guild_id_raw, old_name, new_name],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(changed > 0)
+    }
+}
+
+fn normalize_term(term: &str) -> String {
+    term.trim().to_lowercase()
 }

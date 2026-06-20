@@ -5,6 +5,7 @@ use tokio::time::timeout;
 
 use crate::{
     music::{player, track::Track},
+    permissions,
     ui::player_panel,
     Ctx, Error,
 };
@@ -65,6 +66,17 @@ pub async fn play(
 
     ctx.defer().await?;
     ctx.say("Lagi nyiapin lagu...").await.ok();
+
+    if !permissions::require_allowed_channel(ctx).await? {
+        return Ok(());
+    }
+
+    if ctx.data().db.is_blocked_query(guild_id, &query_or_url)? {
+        ctx.say("Query atau URL itu masuk blocklist server.")
+            .await
+            .ok();
+        return Ok(());
+    }
 
     if let Some(remaining) = player::play_cooldown_remaining(ctx.data(), guild_id, user_id).await {
         ctx.say(format!(

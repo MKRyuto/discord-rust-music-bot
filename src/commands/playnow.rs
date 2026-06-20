@@ -25,6 +25,12 @@ pub async fn playnow(
         .ok_or("Command ini cuma bisa dipakai di server.")?;
     let user_id = ctx.author().id;
 
+    if ctx.data().db.is_blocked_query(guild_id, &query_or_url)? {
+        ctx.say("Query atau URL itu masuk blocklist server.")
+            .await?;
+        return Ok(());
+    }
+
     ctx.defer().await?;
     ctx.say("Lagi nyiapin lagu buat diputar sekarang...")
         .await

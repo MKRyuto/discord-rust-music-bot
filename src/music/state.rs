@@ -38,6 +38,7 @@ impl LoopMode {
 #[derive(Debug)]
 pub struct GuildMusicState {
     pub queue: VecDeque<Track>,
+    pub previous_tracks: VecDeque<Track>,
     pub now_playing: Option<Track>,
     pub current_handle: Option<TrackHandle>,
     pub suppress_next_end: bool,
@@ -58,6 +59,7 @@ impl Default for GuildMusicState {
     fn default() -> Self {
         Self {
             queue: VecDeque::new(),
+            previous_tracks: VecDeque::new(),
             now_playing: None,
             current_handle: None,
             suppress_next_end: false,
@@ -103,6 +105,7 @@ impl MusicStore {
         }
 
         state.now_playing = None;
+        state.previous_tracks.clear();
         state.queue = queue;
         state.current_handle = None;
         state.is_paused = false;

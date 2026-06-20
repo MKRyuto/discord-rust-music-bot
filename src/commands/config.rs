@@ -1,9 +1,23 @@
+use poise::serenity_prelude as serenity;
+
 use crate::{permissions, Ctx, Error};
 
 /// Kelola setting music bot server.
 #[poise::command(
     slash_command,
-    subcommands("show", "cooldown", "maxqueue", "voteskip", "normalize_cap"),
+    subcommands(
+        "show",
+        "cooldown",
+        "maxqueue",
+        "voteskip",
+        "normalize_cap",
+        "allow_channel",
+        "unallow_channel",
+        "allowed_channels",
+        "block",
+        "unblock",
+        "blocklist"
+    ),
     subcommand_required
 )]
 pub async fn config(_ctx: Ctx<'_>) -> Result<(), Error> {
@@ -19,11 +33,13 @@ pub async fn show(ctx: Ctx<'_>) -> Result<(), Error> {
 
     let db = &ctx.data().db;
     ctx.say(format!(
-        "Music config:\n- Cooldown: `{}` detik\n- Max queue per user: `{}` lagu\n- Vote skip threshold: `{}%`\n- Normalize cap: `{}%`",
+        "Music config:\n- Cooldown: `{}` detik\n- Max queue per user: `{}` lagu\n- Vote skip threshold: `{}%`\n- Normalize cap: `{}%`\n- Allowed channels: `{}`\n- Blocked terms: `{}`",
         db.play_cooldown_secs(guild_id)?,
         db.max_queue_per_user(guild_id)?,
         db.vote_skip_percent(guild_id)?,
         db.normalize_cap_percent(guild_id)?,
+        db.allowed_channels(guild_id)?.len(),
+        db.blocked_terms(guild_id)?.len(),
     ))
     .await?;
 
@@ -112,4 +128,157 @@ pub async fn normalize_cap(
         .await?;
 
     Ok(())
+}
+
+/// Batasi music command ke channel tertentu.
+#[poise::command(slash_command, rename = "allow-channel")]
+pub async fn allow_channel(
+    ctx: Ctx<'_>,
+    #[description = "Channel yang diizinkan"] channel: serenity::GuildChannel,
+) -> Result<(), Error> {
+    if !permissions::require_music_setup(ctx).await? {
+        return Ok(());
+    }
+
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    ctx.data().db.add_allowed_channel(guild_id, channel.id)?;
+    ctx.say(format!(
+        "Music bot sekarang boleh dipakai di <#{}>.",
+        channel.id.get()
+    ))
+    .await?;
+
+    Ok(())
+}
+
+/// Hapus channel dari allowlist music command.
+#[poise::command(slash_command, rename = "unallow-channel")]
+pub async fn unallow_channel(
+    ctx: Ctx<'_>,
+    #[description = "Channel yang mau dihapus"] channel: serenity::GuildChannel,
+) -> Result<(), Error> {
+    if !permissions::require_music_setup(ctx).await? {
+        return Ok(());
+    }
+
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    if ctx.data().db.remove_allowed_channel(guild_id, channel.id)? {
+        ctx.say(format!(
+            "Channel <#{}> dihapus dari allowlist.",
+            channel.id.get()
+        ))
+        .await?;
+    } else {
+        ctx.say(format!(
+            "Channel <#{}> belum ada di allowlist.",
+            channel.id.get()
+        ))
+        .await?;
+    }
+
+    Ok(())
+}
+
+/// Lihat channel yang diizinkan untuk music command.
+#[poise::command(slash_command, rename = "allowed-channels")]
+pub async fn allowed_channels(ctx: Ctx<'_>) -> Result<(), Error> {
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    let channels = ctx.data().db.allowed_channels(guild_id)?;
+
+    if channels.is_empty() {
+        ctx.say("Belum ada allowed channel. Music command bisa dipakai di semua channel.")
+            .await?;
+    } else {
+        let list = channels
+            .iter()
+            .map(|channel| format!("- <#{}>", channel.get()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        ctx.say(format!("Allowed music channels:\n{list}")).await?;
+    }
+
+    Ok(())
+}
+
+/// Block keyword atau URL supaya tidak bisa diputar.
+#[poise::command(slash_command)]
+pub async fn block(
+    ctx: Ctx<'_>,
+    #[description = "Keyword atau URL yang diblok"] term: String,
+) -> Result<(), Error> {
+    if !permissions::require_music_setup(ctx).await? {
+        return Ok(());
+    }
+
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    let term = normalize_term_input(&term)?;
+    ctx.data().db.add_blocked_term(guild_id, &term)?;
+    ctx.say(format!("Blocked `{term}` untuk server ini."))
+        .await?;
+
+    Ok(())
+}
+
+/// Hapus keyword atau URL dari blocklist.
+#[poise::command(slash_command)]
+pub async fn unblock(
+    ctx: Ctx<'_>,
+    #[description = "Keyword atau URL yang mau dihapus"] term: String,
+) -> Result<(), Error> {
+    if !permissions::require_music_setup(ctx).await? {
+        return Ok(());
+    }
+
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    let term = normalize_term_input(&term)?;
+    if ctx.data().db.remove_blocked_term(guild_id, &term)? {
+        ctx.say(format!("Unblocked `{term}`.")).await?;
+    } else {
+        ctx.say(format!("`{term}` belum ada di blocklist.")).await?;
+    }
+
+    Ok(())
+}
+
+/// Lihat blocklist server.
+#[poise::command(slash_command)]
+pub async fn blocklist(ctx: Ctx<'_>) -> Result<(), Error> {
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    let terms = ctx.data().db.blocked_terms(guild_id)?;
+
+    if terms.is_empty() {
+        ctx.say("Blocklist masih kosong.").await?;
+    } else {
+        let list = terms
+            .iter()
+            .map(|term| format!("- `{term}`"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        ctx.say(format!("Blocked terms:\n{list}")).await?;
+    }
+
+    Ok(())
+}
+
+fn normalize_term_input(term: &str) -> Result<String, Error> {
+    let term = term.trim().to_lowercase();
+    if term.is_empty() {
+        return Err("Term blocklist tidak boleh kosong.".into());
+    }
+    if term.len() > 128 {
+        return Err("Term blocklist maksimal 128 karakter.".into());
+    }
+    Ok(term)
 }

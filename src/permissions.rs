@@ -14,6 +14,10 @@ pub async fn require_music_control(ctx: Ctx<'_>) -> Result<bool, Error> {
         return Ok(false);
     };
 
+    if !allowed_in_channel(ctx, guild_id).await? {
+        return Ok(false);
+    }
+
     let Some(member) = ctx.author_member().await else {
         ctx.say(DENIED_MESSAGE).await?;
         return Ok(false);
@@ -25,6 +29,31 @@ pub async fn require_music_control(ctx: Ctx<'_>) -> Result<bool, Error> {
         ctx.say(DENIED_MESSAGE).await?;
         Ok(false)
     }
+}
+
+pub async fn require_allowed_channel(ctx: Ctx<'_>) -> Result<bool, Error> {
+    let Some(guild_id) = ctx.guild_id() else {
+        ctx.say("Command ini cuma bisa dipakai di server.").await?;
+        return Ok(false);
+    };
+
+    allowed_in_channel(ctx, guild_id).await
+}
+
+async fn allowed_in_channel(ctx: Ctx<'_>, guild_id: serenity::GuildId) -> Result<bool, Error> {
+    let allowed_channels = ctx.data().db.allowed_channels(guild_id)?;
+    if allowed_channels.is_empty() || allowed_channels.contains(&ctx.channel_id()) {
+        return Ok(true);
+    }
+
+    let list = allowed_channels
+        .iter()
+        .map(|channel| format!("<#{}>", channel.get()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    ctx.say(format!("Music bot cuma boleh dipakai di channel: {list}"))
+        .await?;
+    Ok(false)
 }
 
 pub async fn require_music_setup(ctx: Ctx<'_>) -> Result<bool, Error> {

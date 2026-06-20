@@ -1,6 +1,6 @@
 # Discord Rust Music Bot
 
-> Version 1.4.1 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
+> Version 1.4.2 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
 
 Discord Rust Music Bot is a slash-command music bot with per-server queues, interactive embeds, button controls, and YouTube/search playback. It is designed as a clean Rust codebase for a practical Discord music bot, not a giant all-in-one framework.
 
@@ -25,6 +25,10 @@ Discord Rust Music Bot is a slash-command music bot with per-server queues, inte
 - Vote skip for non-DJ listeners
 - Configurable per-user play cooldown and queue limit
 - Configurable vote skip threshold and normalize cap
+- Allowed music command channels and keyword/URL blocklist
+- Replay and previous-track controls
+- Per-user and server music stats
+- Playlist append, rename, and load modes
 - Discord bot presence showing `/help | /play`
 - Queue shuffle
 - Saved playlists backed by SQLite
@@ -168,14 +172,24 @@ winget upgrade Gyan.FFmpeg.Essentials
 | --- | --- |
 | `/play query_or_url:<text>` | Play a YouTube URL or search keyword. Queues the track if something is already playing. |
 | `/playnow query_or_url:<text>` | Play a track immediately while keeping the existing queue. |
+| `/replay` | Replay the current track from the beginning. |
+| `/previous` | Play the previous track. |
 | `/help` | Show bot command help. |
 | `/voteskip` | Vote to skip the current track. |
 | `/history limit:<number>` | Show the most played tracks in the current server. |
+| `/stats server` | Show server music stats. |
+| `/stats user user:<user>` | Show user music stats. |
 | `/config show` | Show server music settings. |
 | `/config cooldown seconds:<number>` | Set per-user `/play` cooldown. |
 | `/config maxqueue limit:<number>` | Set max active queued tracks per user. |
 | `/config voteskip percent:<number>` | Set vote skip threshold. |
 | `/config normalize-cap percent:<number>` | Set effective volume cap when normalize is enabled. |
+| `/config allow-channel channel:<channel>` | Limit music controls to a channel. |
+| `/config unallow-channel channel:<channel>` | Remove a channel from the allowlist. |
+| `/config allowed-channels` | Show allowed music channels. |
+| `/config block term:<text>` | Block a keyword or URL from playback. |
+| `/config unblock term:<text>` | Remove a term from the blocklist. |
+| `/config blocklist` | Show blocked terms. |
 | `/queue` | Show the queue panel. |
 | `/queue show` | Show the queue panel. |
 | `/queue clear` | Clear queued tracks. |
@@ -194,7 +208,9 @@ winget upgrade Gyan.FFmpeg.Essentials
 | `/volume percent:<0-200>` | Set playback volume for the current server. |
 | `/shuffle` | Shuffle the queued tracks. |
 | `/playlist save name:<text>` | Save now playing and the queue as a playlist. |
-| `/playlist load name:<text>` | Load a saved playlist into the queue. |
+| `/playlist append name:<text>` | Append now playing and the queue to a saved playlist. |
+| `/playlist load name:<text> mode:<append|replace|playnow>` | Load a saved playlist into the queue. |
+| `/playlist rename old_name:<text> new_name:<text>` | Rename a saved playlist. |
 | `/playlist list` | Show saved playlists for the current server. |
 | `/playlist delete name:<text>` | Delete a saved playlist. |
 
@@ -203,6 +219,8 @@ winget upgrade Gyan.FFmpeg.Essentials
 Player panel:
 
 - Pause / Resume
+- Previous
+- Replay
 - Skip
 - Vote Skip
 - Stop

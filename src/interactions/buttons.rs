@@ -61,6 +61,18 @@ pub async fn handle_event(
             component.defer(ctx).await?;
             player::skip(ctx, data, guild_id).await?;
         }
+        player_panel::BTN_PREVIOUS => {
+            component.defer(ctx).await?;
+            if let Err(err) = player::previous(ctx, data, guild_id).await {
+                component.channel_id.say(ctx, err.to_string()).await.ok();
+            }
+        }
+        player_panel::BTN_REPLAY => {
+            component.defer(ctx).await?;
+            if let Err(err) = player::replay(ctx, data, guild_id).await {
+                component.channel_id.say(ctx, err.to_string()).await.ok();
+            }
+        }
         player_panel::BTN_VOTE_SKIP => {
             component.defer(ctx).await?;
             match player::vote_skip(ctx, data, guild_id, component.user.id).await {
@@ -218,6 +230,8 @@ fn requires_music_control(custom_id: &str) -> bool {
         custom_id,
         player_panel::BTN_PAUSE_RESUME
             | player_panel::BTN_SKIP
+            | player_panel::BTN_PREVIOUS
+            | player_panel::BTN_REPLAY
             | player_panel::BTN_STOP
             | player_panel::BTN_LOOP
             | player_panel::BTN_VOLUME_DOWN
@@ -245,6 +259,11 @@ async fn component_can_control(
     component: &serenity::ComponentInteraction,
     guild_id: serenity::GuildId,
 ) -> Result<bool, Error> {
+    let allowed_channels = data.db.allowed_channels(guild_id)?;
+    if !allowed_channels.is_empty() && !allowed_channels.contains(&component.channel_id) {
+        return Ok(false);
+    }
+
     let Some(member) = component.member.as_ref() else {
         return Ok(false);
     };

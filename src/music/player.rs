@@ -533,6 +533,73 @@ pub async fn play_now(
     Ok(())
 }
 
+pub async fn replay(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+) -> Result<(), Error> {
+    let (current_handle, track) = {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        let Some(track) = state.now_playing.clone() else {
+            return Err("Tidak ada lagu yang sedang diputar.".into());
+        };
+
+        let current_handle = state.current_handle.take();
+        state.suppress_next_end = current_handle.is_some();
+        state.is_paused = false;
+        state.skip_votes.clear();
+        (current_handle, track)
+    };
+
+    if let Some(handle) = current_handle {
+        handle.stop().ok();
+    }
+
+    play_track(ctx, data, guild_id, track).await?;
+    player_panel::update_player_message(ctx, data, guild_id)
+        .await
+        .ok();
+    Ok(())
+}
+
+pub async fn previous(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+) -> Result<(), Error> {
+    let (current_handle, previous_track) = {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        let Some(previous_track) = state.previous_tracks.pop_back() else {
+            return Err("Belum ada previous track.".into());
+        };
+
+        if let Some(current) = state.now_playing.take() {
+            state.queue.push_front(current);
+        }
+
+        let current_handle = state.current_handle.take();
+        state.suppress_next_end = current_handle.is_some();
+        state.now_playing = Some(previous_track.clone());
+        state.is_paused = false;
+        state.skip_votes.clear();
+        (current_handle, previous_track)
+    };
+
+    if let Some(handle) = current_handle {
+        handle.stop().ok();
+    }
+
+    play_track(ctx, data, guild_id, previous_track).await?;
+    player_panel::update_player_message(ctx, data, guild_id)
+        .await
+        .ok();
+    persist_queue(data, guild_id).await;
+
+    Ok(())
+}
+
 /// Play track sekarang.
 pub async fn play_track(
     ctx: &serenity::Context,
@@ -854,6 +921,7 @@ pub async fn advance_queue(
             }
             crate::music::state::LoopMode::Queue => {
                 if let Some(track) = finished {
+                    remember_previous(&mut state.previous_tracks, track.clone());
                     state.queue.push_back(track);
                 }
                 let next = state.queue.pop_front();
@@ -861,6 +929,9 @@ pub async fn advance_queue(
                 next
             }
             crate::music::state::LoopMode::Off => {
+                if let Some(track) = finished {
+                    remember_previous(&mut state.previous_tracks, track);
+                }
                 let next = state.queue.pop_front();
                 state.now_playing = next.clone();
                 next
@@ -979,8 +1050,11 @@ pub async fn skip(
 
         if state.loop_mode == crate::music::state::LoopMode::Queue {
             if let Some(track) = finished {
+                remember_previous(&mut state.previous_tracks, track.clone());
                 state.queue.push_back(track);
             }
+        } else if let Some(track) = finished {
+            remember_previous(&mut state.previous_tracks, track);
         }
 
         let next_track = state.queue.pop_front();
@@ -1003,6 +1077,13 @@ pub async fn skip(
     persist_queue(data, guild_id).await;
 
     Ok(())
+}
+
+fn remember_previous(previous_tracks: &mut std::collections::VecDeque<Track>, track: Track) {
+    previous_tracks.push_back(track);
+    while previous_tracks.len() > 20 {
+        previous_tracks.pop_front();
+    }
 }
 
 pub async fn pause_resume(

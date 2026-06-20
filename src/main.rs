@@ -41,8 +41,11 @@ async fn main() -> Result<(), Error> {
         commands: vec![
             commands::play::play(),
             commands::playnow::playnow(),
+            commands::replay::replay(),
+            commands::previous::previous(),
             commands::voteskip::voteskip(),
             commands::history::history(),
+            commands::stats::stats(),
             commands::help::help(),
             commands::config::config(),
             commands::queue::queue(),

@@ -7,6 +7,8 @@ use crate::{Data, Error};
 
 pub const BTN_PAUSE_RESUME: &str = "music:pause_resume";
 pub const BTN_SKIP: &str = "music:skip";
+pub const BTN_PREVIOUS: &str = "music:previous";
+pub const BTN_REPLAY: &str = "music:replay";
 pub const BTN_STOP: &str = "music:stop";
 pub const BTN_QUEUE: &str = "music:queue";
 pub const BTN_LOOP: &str = "music:loop";
@@ -94,15 +96,22 @@ pub fn build_player_buttons(
                 .label("Skip")
                 .style(ButtonStyle::Secondary)
                 .disabled(!has_track),
+            CreateButton::new(BTN_PREVIOUS)
+                .label("Previous")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_REPLAY)
+                .label("Replay")
+                .style(ButtonStyle::Secondary)
+                .disabled(!has_track),
             CreateButton::new(BTN_VOTE_SKIP)
                 .label("Vote Skip")
                 .style(ButtonStyle::Secondary)
                 .disabled(!has_track),
-            CreateButton::new(BTN_STOP)
-                .label("Stop")
-                .style(ButtonStyle::Danger)
-                .disabled(!has_track),
         ]),
+        CreateActionRow::Buttons(vec![CreateButton::new(BTN_STOP)
+            .label("Stop")
+            .style(ButtonStyle::Danger)
+            .disabled(!has_track)]),
         CreateActionRow::Buttons(vec![
             CreateButton::new(BTN_QUEUE)
                 .label("Queue")
