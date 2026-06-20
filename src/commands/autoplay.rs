@@ -1,4 +1,4 @@
-use crate::{Ctx, Error};
+use crate::{permissions, Ctx, Error};
 
 /// Enable atau disable autoplay dari history server.
 #[poise::command(slash_command)]
@@ -6,6 +6,10 @@ pub async fn autoplay(
     ctx: Ctx<'_>,
     #[description = "Nyalakan autoplay history-based"] enabled: bool,
 ) -> Result<(), Error> {
+    if !permissions::require_music_control(ctx).await? {
+        return Ok(());
+    }
+
     let guild_id = ctx
         .guild_id()
         .ok_or("Command ini cuma bisa dipakai di server.")?;

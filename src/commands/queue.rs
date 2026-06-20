@@ -1,11 +1,15 @@
 use crate::{
     music::player,
+    permissions,
     ui::{player_panel, queue_panel},
     Ctx, Error,
 };
 
 /// Tampilkan queue musik.
-#[poise::command(slash_command, subcommands("show", "clear", "remove", "move_track"))]
+#[poise::command(
+    slash_command,
+    subcommands("show", "clear", "remove", "remove_search", "move_track")
+)]
 pub async fn queue(ctx: Ctx<'_>) -> Result<(), Error> {
     show_queue_panel(ctx).await
 }
@@ -35,6 +39,10 @@ async fn show_queue_panel(ctx: Ctx<'_>) -> Result<(), Error> {
 /// Bersihkan queue.
 #[poise::command(slash_command)]
 pub async fn clear(ctx: Ctx<'_>) -> Result<(), Error> {
+    if !permissions::require_music_control(ctx).await? {
+        return Ok(());
+    }
+
     let guild_id = ctx
         .guild_id()
         .ok_or("Command ini cuma bisa dipakai di server.")?;
@@ -68,6 +76,10 @@ pub async fn remove(
     ctx: Ctx<'_>,
     #[description = "Nomor lagu di queue"] position: usize,
 ) -> Result<(), Error> {
+    if !permissions::require_music_control(ctx).await? {
+        return Ok(());
+    }
+
     let guild_id = ctx
         .guild_id()
         .ok_or("Command ini cuma bisa dipakai di server.")?;
@@ -92,6 +104,40 @@ pub async fn remove(
     Ok(())
 }
 
+/// Hapus lagu dari queue berdasarkan judul atau URL.
+#[poise::command(slash_command, rename = "remove-search")]
+pub async fn remove_search(
+    ctx: Ctx<'_>,
+    #[description = "Sebagian judul atau URL lagu"] query: String,
+) -> Result<(), Error> {
+    if !permissions::require_music_control(ctx).await? {
+        return Ok(());
+    }
+
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+
+    match player::remove_queued_track_matching(ctx.data(), guild_id, &query).await {
+        Some((position, track)) => {
+            queue_panel::update_queue_message(ctx.serenity_context(), ctx.data(), guild_id)
+                .await
+                .ok();
+            player_panel::update_player_message(ctx.serenity_context(), ctx.data(), guild_id)
+                .await
+                .ok();
+            ctx.say(format!("Removed `{position}.` **{}**", track.title))
+                .await?;
+        }
+        None => {
+            ctx.say(format!("Tidak nemu queue match buat `{query}`."))
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Pindah urutan lagu di queue.
 #[poise::command(slash_command, rename = "move")]
 pub async fn move_track(
@@ -99,6 +145,10 @@ pub async fn move_track(
     #[description = "Nomor lagu awal"] from: usize,
     #[description = "Nomor tujuan"] to: usize,
 ) -> Result<(), Error> {
+    if !permissions::require_music_control(ctx).await? {
+        return Ok(());
+    }
+
     let guild_id = ctx
         .guild_id()
         .ok_or("Command ini cuma bisa dipakai di server.")?;

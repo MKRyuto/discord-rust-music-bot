@@ -1,5 +1,6 @@
 use crate::{
     music::{player, track::Track},
+    permissions,
     ui::{player_panel, queue_panel},
     Ctx, Error,
 };
@@ -55,6 +56,10 @@ pub async fn load(
     ctx: Ctx<'_>,
     #[description = "Nama playlist"] name: String,
 ) -> Result<(), Error> {
+    if !permissions::require_music_control(ctx).await? {
+        return Ok(());
+    }
+
     let guild_id = ctx
         .guild_id()
         .ok_or("Command ini cuma bisa dipakai di server.")?;
@@ -71,6 +76,19 @@ pub async fn load(
             .await?;
         return Ok(());
     }
+
+    let queued_by_user = player::user_queue_count(ctx.data(), guild_id, user_id).await;
+    let remaining_slots = player::MAX_QUEUED_TRACKS_PER_USER.saturating_sub(queued_by_user);
+    if remaining_slots == 0 {
+        ctx.say(format!(
+            "Queue lu sudah mencapai batas `{}` lagu. Hapus beberapa dulu sebelum load playlist.",
+            player::MAX_QUEUED_TRACKS_PER_USER
+        ))
+        .await?;
+        return Ok(());
+    }
+
+    let tracks = tracks.into_iter().take(remaining_slots).collect::<Vec<_>>();
 
     if let Err(err) = player::join_user_channel(ctx.serenity_context(), guild_id, user_id).await {
         ctx.say(format!("Gagal join voice channel: {err}"))
@@ -144,6 +162,10 @@ pub async fn delete(
     ctx: Ctx<'_>,
     #[description = "Nama playlist"] name: String,
 ) -> Result<(), Error> {
+    if !permissions::require_music_control(ctx).await? {
+        return Ok(());
+    }
+
     let guild_id = ctx
         .guild_id()
         .ok_or("Command ini cuma bisa dipakai di server.")?;

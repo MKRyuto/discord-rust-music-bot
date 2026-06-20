@@ -1,6 +1,7 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
+    time::Instant,
 };
 
 use poise::serenity_prelude as serenity;
@@ -49,6 +50,8 @@ pub struct GuildMusicState {
     pub queue_message_id: Option<serenity::MessageId>,
     pub queue_channel_id: Option<serenity::ChannelId>,
     pub queue_page: usize,
+    pub skip_votes: HashSet<serenity::UserId>,
+    pub recent_play_requests: HashMap<serenity::UserId, Instant>,
 }
 
 impl Default for GuildMusicState {
@@ -67,6 +70,8 @@ impl Default for GuildMusicState {
             queue_message_id: None,
             queue_channel_id: None,
             queue_page: 0,
+            skip_votes: HashSet::new(),
+            recent_play_requests: HashMap::new(),
         }
     }
 }
@@ -103,5 +108,7 @@ impl MusicStore {
         state.is_paused = false;
         state.suppress_next_end = false;
         state.queue_page = 0;
+        state.skip_votes.clear();
+        state.recent_play_requests.clear();
     }
 }

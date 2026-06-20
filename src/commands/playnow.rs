@@ -5,7 +5,7 @@ use tokio::time::timeout;
 use crate::{
     commands::play::autocomplete_track,
     music::{player, track::Track},
-    Ctx, Error,
+    permissions, Ctx, Error,
 };
 
 /// Play lagu sekarang dan biarkan queue lama tetap lanjut setelahnya.
@@ -16,6 +16,10 @@ pub async fn playnow(
     #[autocomplete = "autocomplete_track"]
     query_or_url: String,
 ) -> Result<(), Error> {
+    if !permissions::require_music_control(ctx).await? {
+        return Ok(());
+    }
+
     let guild_id = ctx
         .guild_id()
         .ok_or("Command ini cuma bisa dipakai di server.")?;

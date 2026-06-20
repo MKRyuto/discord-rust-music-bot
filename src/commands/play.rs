@@ -66,6 +66,26 @@ pub async fn play(
     ctx.defer().await?;
     ctx.say("Lagi nyiapin lagu...").await.ok();
 
+    if let Some(remaining) = player::play_cooldown_remaining(ctx.data(), guild_id, user_id).await {
+        ctx.say(format!(
+            "Tunggu `{remaining}` detik dulu sebelum nambah lagu lagi."
+        ))
+        .await
+        .ok();
+        return Ok(());
+    }
+
+    let queued_by_user = player::user_queue_count(ctx.data(), guild_id, user_id).await;
+    if queued_by_user >= player::MAX_QUEUED_TRACKS_PER_USER {
+        ctx.say(format!(
+            "Queue lu sudah mencapai batas `{}` lagu. Tunggu lagu lu keputar atau hapus beberapa dulu.",
+            player::MAX_QUEUED_TRACKS_PER_USER
+        ))
+        .await
+        .ok();
+        return Ok(());
+    }
+
     if let Err(err) = player::join_user_channel(ctx.serenity_context(), guild_id, user_id).await {
         ctx.say(format!("Gagal join voice channel: {err}"))
             .await

@@ -1,13 +1,14 @@
 mod commands;
 mod interactions;
 mod music;
+mod permissions;
 mod storage;
 mod ui;
 
 use std::{env, sync::Arc};
 
 use poise::serenity_prelude as serenity;
-use serenity::{ClientBuilder, GatewayIntents};
+use serenity::{ActivityData, ClientBuilder, GatewayIntents};
 use songbird::SerenityInit;
 
 use crate::music::state::MusicStore;
@@ -40,11 +41,15 @@ async fn main() -> Result<(), Error> {
         commands: vec![
             commands::play::play(),
             commands::playnow::playnow(),
+            commands::voteskip::voteskip(),
             commands::history::history(),
+            commands::help::help(),
             commands::queue::queue(),
             commands::now::now(),
             commands::leave::leave(),
             commands::autoplay::autoplay(),
+            commands::normalize::normalize(),
+            commands::djrole::djrole(),
             commands::volume::volume(),
             commands::shuffle::shuffle(),
             commands::playlist::playlist(),
@@ -81,6 +86,8 @@ async fn main() -> Result<(), Error> {
                     poise::builtins::register_globally(ctx, &framework.options().commands).await?;
                     tracing::info!("Registered slash commands globally");
                 }
+
+                ctx.set_activity(Some(ActivityData::listening("/help | /play")));
 
                 let music = Arc::new(MusicStore::default());
                 for (guild_id, (now_playing, queue)) in db.load_all_queues()? {

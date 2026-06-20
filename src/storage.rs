@@ -57,7 +57,14 @@ impl Database {
             CREATE TABLE IF NOT EXISTS guild_settings (
                 guild_id TEXT PRIMARY KEY,
                 volume_percent INTEGER NOT NULL DEFAULT 100,
-                autoplay_enabled INTEGER NOT NULL DEFAULT 0
+                autoplay_enabled INTEGER NOT NULL DEFAULT 0,
+                normalize_enabled INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS dj_roles (
+                guild_id TEXT NOT NULL,
+                role_id TEXT NOT NULL,
+                PRIMARY KEY (guild_id, role_id)
             );
 
             CREATE TABLE IF NOT EXISTS playlists (
@@ -110,6 +117,15 @@ impl Database {
 
         if let Err(err) = conn.execute(
             "ALTER TABLE guild_settings ADD COLUMN autoplay_enabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        ) {
+            if !err.to_string().contains("duplicate column name") {
+                return Err(err.into());
+            }
+        }
+
+        if let Err(err) = conn.execute(
+            "ALTER TABLE guild_settings ADD COLUMN normalize_enabled INTEGER NOT NULL DEFAULT 0",
             [],
         ) {
             if !err.to_string().contains("duplicate column name") {
@@ -188,6 +204,93 @@ impl Database {
         )?;
 
         Ok(())
+    }
+
+    pub fn normalize_enabled(&self, guild_id: serenity::GuildId) -> Result<bool, Error> {
+        let conn = self.connect()?;
+        let enabled = conn
+            .query_row(
+                "SELECT normalize_enabled FROM guild_settings WHERE guild_id = ?1",
+                params![guild_id.get().to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            != 0;
+
+        Ok(enabled)
+    }
+
+    pub fn set_normalize_enabled(
+        &self,
+        guild_id: serenity::GuildId,
+        enabled: bool,
+    ) -> Result<(), Error> {
+        let conn = self.connect()?;
+        conn.execute(
+            "
+            INSERT INTO guild_settings (guild_id, normalize_enabled)
+            VALUES (?1, ?2)
+            ON CONFLICT(guild_id) DO UPDATE SET normalize_enabled = excluded.normalize_enabled
+            ",
+            params![guild_id.get().to_string(), if enabled { 1 } else { 0 }],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn dj_roles(&self, guild_id: serenity::GuildId) -> Result<Vec<serenity::RoleId>, Error> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "
+            SELECT role_id
+            FROM dj_roles
+            WHERE guild_id = ?1
+            ORDER BY role_id ASC
+            ",
+        )?;
+
+        let rows = stmt.query_map(params![guild_id.get().to_string()], |row| {
+            let role_id_raw: String = row.get(0)?;
+            Ok(role_id_raw.parse::<u64>().ok().map(serenity::RoleId::new))
+        })?;
+
+        Ok(rows
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect())
+    }
+
+    pub fn add_dj_role(
+        &self,
+        guild_id: serenity::GuildId,
+        role_id: serenity::RoleId,
+    ) -> Result<(), Error> {
+        let conn = self.connect()?;
+        conn.execute(
+            "
+            INSERT OR IGNORE INTO dj_roles (guild_id, role_id)
+            VALUES (?1, ?2)
+            ",
+            params![guild_id.get().to_string(), role_id.get().to_string()],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn remove_dj_role(
+        &self,
+        guild_id: serenity::GuildId,
+        role_id: serenity::RoleId,
+    ) -> Result<bool, Error> {
+        let conn = self.connect()?;
+        let changed = conn.execute(
+            "DELETE FROM dj_roles WHERE guild_id = ?1 AND role_id = ?2",
+            params![guild_id.get().to_string(), role_id.get().to_string()],
+        )?;
+
+        Ok(changed > 0)
     }
 
     pub fn record_history(&self, guild_id: serenity::GuildId, track: &Track) -> Result<(), Error> {

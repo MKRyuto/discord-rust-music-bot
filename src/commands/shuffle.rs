@@ -1,8 +1,12 @@
-use crate::{music::player, ui::player_panel, Ctx, Error};
+use crate::{music::player, permissions, ui::player_panel, Ctx, Error};
 
 /// Acak urutan queue.
 #[poise::command(slash_command)]
 pub async fn shuffle(ctx: Ctx<'_>) -> Result<(), Error> {
+    if !permissions::require_music_control(ctx).await? {
+        return Ok(());
+    }
+
     let guild_id = ctx
         .guild_id()
         .ok_or("Command ini cuma bisa dipakai di server.")?;

@@ -6,6 +6,7 @@ use serenity::{
 
 use crate::{
     music::player,
+    permissions,
     ui::{player_panel, queue_panel},
     Data, Error,
 };
@@ -33,6 +34,24 @@ pub async fn handle_event(
         return Ok(());
     };
 
+    if requires_music_control(custom_id)
+        && !component_can_control(ctx, data, component, guild_id).await?
+    {
+        component
+            .create_response(
+                ctx,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(
+                            "Kontrol ini cuma bisa dipakai admin server atau role DJ yang sudah diset.",
+                        )
+                        .ephemeral(true),
+                ),
+            )
+            .await?;
+        return Ok(());
+    }
+
     match custom_id {
         player_panel::BTN_PAUSE_RESUME => {
             component.defer(ctx).await?;
@@ -41,6 +60,32 @@ pub async fn handle_event(
         player_panel::BTN_SKIP => {
             component.defer(ctx).await?;
             player::skip(ctx, data, guild_id).await?;
+        }
+        player_panel::BTN_VOTE_SKIP => {
+            component.defer(ctx).await?;
+            match player::vote_skip(ctx, data, guild_id, component.user.id).await {
+                Ok((votes, needed, skipped)) => {
+                    if skipped {
+                        component
+                            .channel_id
+                            .say(
+                                ctx,
+                                format!("Vote skip lolos `{votes}/{needed}`. Skipping."),
+                            )
+                            .await
+                            .ok();
+                    } else {
+                        component
+                            .channel_id
+                            .say(ctx, format!("Vote skip: `{votes}/{needed}` vote(s)."))
+                            .await
+                            .ok();
+                    }
+                }
+                Err(err) => {
+                    component.channel_id.say(ctx, err.to_string()).await.ok();
+                }
+            }
         }
         player_panel::BTN_STOP => {
             component.defer(ctx).await?;
@@ -72,6 +117,17 @@ pub async fn handle_event(
                     .await
                     .ok();
             }
+        }
+        player_panel::BTN_NORMALIZE => {
+            let enabled = !data.db.normalize_enabled(guild_id)?;
+            data.db.set_normalize_enabled(guild_id, enabled)?;
+            update_component_to_player(ctx, data, component, guild_id).await?;
+            player::set_volume(ctx, data, guild_id, current_volume(data, guild_id).await).await?;
+        }
+        player_panel::BTN_AUTOPLAY => {
+            let enabled = !data.db.autoplay_enabled(guild_id)?;
+            data.db.set_autoplay_enabled(guild_id, enabled)?;
+            update_component_to_player(ctx, data, component, guild_id).await?;
         }
         player_panel::BTN_PLAYLISTS => {
             show_playlists(ctx, data, component, guild_id).await?;
@@ -143,6 +199,42 @@ pub async fn handle_event(
     }
 
     Ok(())
+}
+
+fn requires_music_control(custom_id: &str) -> bool {
+    matches!(
+        custom_id,
+        player_panel::BTN_PAUSE_RESUME
+            | player_panel::BTN_SKIP
+            | player_panel::BTN_STOP
+            | player_panel::BTN_LOOP
+            | player_panel::BTN_VOLUME_DOWN
+            | player_panel::BTN_VOLUME_UP
+            | player_panel::BTN_SHUFFLE
+            | player_panel::BTN_NORMALIZE
+            | player_panel::BTN_AUTOPLAY
+            | queue_panel::BTN_CLEAR
+            | queue_panel::SELECT_REMOVE
+    )
+}
+
+async fn current_volume(data: &Data, guild_id: serenity::GuildId) -> u8 {
+    let state_lock = data.music.get(guild_id).await;
+    let state = state_lock.lock().await;
+    state.volume_percent
+}
+
+async fn component_can_control(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    guild_id: serenity::GuildId,
+) -> Result<bool, Error> {
+    let Some(member) = component.member.as_ref() else {
+        return Ok(false);
+    };
+
+    permissions::can_control_music(ctx, data, guild_id, member).await
 }
 
 async fn show_playlists(

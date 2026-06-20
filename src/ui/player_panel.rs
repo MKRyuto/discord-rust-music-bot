@@ -15,26 +15,34 @@ pub const BTN_VOLUME_DOWN: &str = "music:volume_down";
 pub const BTN_VOLUME_UP: &str = "music:volume_up";
 pub const BTN_SHUFFLE: &str = "music:shuffle";
 pub const BTN_PLAYLISTS: &str = "music:playlists";
+pub const BTN_VOTE_SKIP: &str = "music:vote_skip";
+pub const BTN_NORMALIZE: &str = "music:normalize";
+pub const BTN_AUTOPLAY: &str = "music:autoplay";
 
 pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> CreateEmbed {
     let state_lock = data.music.get(guild_id).await;
     let state = state_lock.lock().await;
     let autoplay = data.db.autoplay_enabled(guild_id).unwrap_or(false);
+    let normalize = data.db.normalize_enabled(guild_id).unwrap_or(false);
 
     let mut embed = CreateEmbed::new();
 
     if let Some(track) = &state.now_playing {
         let status = if state.is_paused { "Paused" } else { "Playing" };
 
+        let normalize_label = if normalize { "On (cap 85%)" } else { "Off" };
+
         embed = embed.title("Music Player").description(format!(
-            "{status}\n\n**{}**\nDuration: `{}`\nRequested by: <@{}>\n\nQueue: `{}` track(s)\nLoop: `{}`\nVolume: `{}%`\nAutoplay: `{}`",
+            "{status}\n\n**{}**\nDuration: `{}`\nRequested by: <@{}>\n\nQueue: `{}` track(s)\nVote skip: `{}` vote(s)\nLoop: `{}`\nVolume: `{}%`\nAutoplay: `{}`\nNormalize: `{}`",
             track.title,
             track.duration_label(),
             track.requested_by.get(),
             state.queue.len(),
+            state.skip_votes.len(),
             state.loop_mode.label(),
             state.volume_percent,
             if autoplay { "On" } else { "Off" },
+            normalize_label,
         ));
 
         if let Some(thumbnail) = &track.thumbnail {
@@ -49,8 +57,23 @@ pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> Cre
     embed
 }
 
-pub fn build_player_buttons(is_paused: bool, loop_label: &str) -> Vec<CreateActionRow> {
+pub fn build_player_buttons(
+    is_paused: bool,
+    loop_label: &str,
+    normalize_enabled: bool,
+    autoplay_enabled: bool,
+) -> Vec<CreateActionRow> {
     let pause_label = if is_paused { "Resume" } else { "Pause" };
+    let normalize_label = if normalize_enabled {
+        "Normalize: On"
+    } else {
+        "Normalize: Off"
+    };
+    let autoplay_label = if autoplay_enabled {
+        "Autoplay: On"
+    } else {
+        "Autoplay: Off"
+    };
 
     vec![
         CreateActionRow::Buttons(vec![
@@ -59,6 +82,9 @@ pub fn build_player_buttons(is_paused: bool, loop_label: &str) -> Vec<CreateActi
                 .style(ButtonStyle::Primary),
             CreateButton::new(BTN_SKIP)
                 .label("Skip")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_VOTE_SKIP)
+                .label("Vote Skip")
                 .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_STOP)
                 .label("Stop")
@@ -85,10 +111,16 @@ pub fn build_player_buttons(is_paused: bool, loop_label: &str) -> Vec<CreateActi
             CreateButton::new(BTN_SHUFFLE)
                 .label("Shuffle")
                 .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_NORMALIZE)
+                .label(normalize_label)
+                .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_PLAYLISTS)
                 .label("Playlists")
                 .style(ButtonStyle::Secondary),
         ]),
+        CreateActionRow::Buttons(vec![CreateButton::new(BTN_AUTOPLAY)
+            .label(autoplay_label)
+            .style(ButtonStyle::Secondary)]),
     ]
 }
 
@@ -98,7 +130,14 @@ pub async fn build_player_components(
 ) -> Vec<CreateActionRow> {
     let state_lock = data.music.get(guild_id).await;
     let state = state_lock.lock().await;
-    build_player_buttons(state.is_paused, state.loop_mode.label())
+    let normalize_enabled = data.db.normalize_enabled(guild_id).unwrap_or(false);
+    let autoplay_enabled = data.db.autoplay_enabled(guild_id).unwrap_or(false);
+    build_player_buttons(
+        state.is_paused,
+        state.loop_mode.label(),
+        normalize_enabled,
+        autoplay_enabled,
+    )
 }
 
 pub async fn send_or_update_player_panel(

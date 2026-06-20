@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use poise::serenity_prelude as serenity;
 use songbird::input::YoutubeDl;
@@ -10,6 +10,9 @@ use crate::ui::player_panel;
 use crate::{Data, Error};
 
 const IDLE_DISCONNECT_AFTER: Duration = Duration::from_secs(60);
+const NORMALIZE_MAX_VOLUME_PERCENT: u8 = 85;
+const PLAY_COOLDOWN: Duration = Duration::from_secs(10);
+pub const MAX_QUEUED_TRACKS_PER_USER: usize = 10;
 
 fn is_http_url(input: &str) -> bool {
     url::Url::parse(input)
@@ -60,7 +63,8 @@ pub async fn set_volume(
     };
 
     if let Some(handle) = current_handle {
-        handle.set_volume(volume_percent as f32 / 100.0)?;
+        handle
+            .set_volume(effective_volume_percent(data, guild_id, volume_percent)? as f32 / 100.0)?;
     }
 
     player_panel::update_player_message(ctx, data, guild_id)
@@ -68,6 +72,18 @@ pub async fn set_volume(
         .ok();
 
     Ok(())
+}
+
+fn effective_volume_percent(
+    data: &Data,
+    guild_id: serenity::GuildId,
+    volume_percent: u8,
+) -> Result<u8, Error> {
+    if data.db.normalize_enabled(guild_id)? {
+        Ok(volume_percent.min(NORMALIZE_MAX_VOLUME_PERCENT))
+    } else {
+        Ok(volume_percent)
+    }
 }
 
 pub async fn adjust_volume(
@@ -161,6 +177,40 @@ pub async fn remove_queued_track(
     removed
 }
 
+pub async fn remove_queued_track_matching(
+    data: &Data,
+    guild_id: serenity::GuildId,
+    query: &str,
+) -> Option<(usize, Track)> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return None;
+    }
+
+    let removed = {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        let Some(index) = state.queue.iter().position(|track| {
+            track.title.to_lowercase().contains(&needle)
+                || track.url.to_lowercase().contains(&needle)
+        }) else {
+            return None;
+        };
+
+        let removed = state.queue.remove(index).map(|track| (index + 1, track));
+        if removed.is_some() {
+            state.queue_page = 0;
+        }
+        removed
+    };
+
+    if removed.is_some() {
+        persist_queue(data, guild_id).await;
+    }
+
+    removed
+}
+
 pub async fn move_queued_track(
     data: &Data,
     guild_id: serenity::GuildId,
@@ -193,6 +243,107 @@ pub async fn move_queued_track(
     }
 
     moved
+}
+
+pub async fn play_cooldown_remaining(
+    data: &Data,
+    guild_id: serenity::GuildId,
+    user_id: serenity::UserId,
+) -> Option<u64> {
+    let state_lock = data.music.get(guild_id).await;
+    let mut state = state_lock.lock().await;
+    let now = Instant::now();
+
+    state
+        .recent_play_requests
+        .retain(|_, last| now.duration_since(*last) < PLAY_COOLDOWN);
+
+    if let Some(last) = state.recent_play_requests.get(&user_id) {
+        let elapsed = now.duration_since(*last);
+        if elapsed < PLAY_COOLDOWN {
+            return Some((PLAY_COOLDOWN - elapsed).as_secs().max(1));
+        }
+    }
+
+    state.recent_play_requests.insert(user_id, now);
+    None
+}
+
+pub async fn user_queue_count(
+    data: &Data,
+    guild_id: serenity::GuildId,
+    user_id: serenity::UserId,
+) -> usize {
+    let state_lock = data.music.get(guild_id).await;
+    let state = state_lock.lock().await;
+    state
+        .queue
+        .iter()
+        .filter(|track| track.requested_by == user_id)
+        .count()
+        + usize::from(
+            state
+                .now_playing
+                .as_ref()
+                .is_some_and(|track| track.requested_by == user_id),
+        )
+}
+
+pub async fn vote_skip(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+    user_id: serenity::UserId,
+) -> Result<(usize, usize, bool), Error> {
+    if user_voice_channel(ctx, guild_id, user_id).is_none() {
+        return Err("Lu harus join voice channel dulu buat vote skip.".into());
+    }
+
+    let needed = vote_skip_threshold(ctx, guild_id, user_id);
+    let votes = {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        if state.now_playing.is_none() {
+            return Err("Tidak ada lagu yang sedang diputar.".into());
+        }
+        state.skip_votes.insert(user_id);
+        state.skip_votes.len()
+    };
+
+    if votes >= needed {
+        skip(ctx, data, guild_id).await?;
+        Ok((votes, needed, true))
+    } else {
+        player_panel::update_player_message(ctx, data, guild_id)
+            .await
+            .ok();
+        Ok((votes, needed, false))
+    }
+}
+
+fn vote_skip_threshold(
+    ctx: &serenity::Context,
+    guild_id: serenity::GuildId,
+    user_id: serenity::UserId,
+) -> usize {
+    let Some(channel_id) = user_voice_channel(ctx, guild_id, user_id) else {
+        return 1;
+    };
+    let Some(guild) = guild_id.to_guild_cached(ctx) else {
+        return 1;
+    };
+
+    let listeners = guild
+        .voice_states
+        .values()
+        .filter(|state| state.channel_id == Some(channel_id))
+        .count();
+
+    if listeners <= 2 {
+        1
+    } else {
+        listeners.div_ceil(2)
+    }
 }
 
 /// Cari voice channel user di guild.
@@ -279,6 +430,7 @@ pub async fn start_if_idle(
         };
         state.now_playing = Some(track.clone());
         state.is_paused = false;
+        state.skip_votes.clear();
         track
     };
 
@@ -304,6 +456,7 @@ pub async fn play_now(
         state.suppress_next_end = previous_handle.is_some();
         state.now_playing = Some(track.clone());
         state.is_paused = false;
+        state.skip_votes.clear();
         previous_handle
     };
 
@@ -348,7 +501,8 @@ pub async fn play_track(
     {
         let state_lock = data.music.get(guild_id).await;
         let state = state_lock.lock().await;
-        track_handle.set_volume(state.volume_percent as f32 / 100.0)?;
+        let volume_percent = effective_volume_percent(data, guild_id, state.volume_percent)?;
+        track_handle.set_volume(volume_percent as f32 / 100.0)?;
         drop(state);
         let mut state = state_lock.lock().await;
         state.current_handle = Some(track_handle.clone());
@@ -627,6 +781,7 @@ pub async fn advance_queue(
         let autoplay_requester = finished.as_ref().map(|track| track.requested_by);
         let autoplay_exclude_url = finished.as_ref().map(|track| track.url.clone());
         state.current_handle = None;
+        state.skip_votes.clear();
 
         let next_track = match state.loop_mode {
             crate::music::state::LoopMode::One => {
@@ -730,6 +885,7 @@ pub async fn stop(
         let current_handle = state.current_handle.take();
         state.suppress_next_end = current_handle.is_some();
         state.is_paused = false;
+        state.skip_votes.clear();
 
         if let Some(handle) = current_handle {
             handle.stop().ok();
@@ -757,6 +913,7 @@ pub async fn skip(
         let current_handle = state.current_handle.take();
         state.suppress_next_end = current_handle.is_some();
         state.is_paused = false;
+        state.skip_votes.clear();
 
         let finished = state.now_playing.take();
 

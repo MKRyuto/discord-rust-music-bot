@@ -1,6 +1,9 @@
 pub mod autoplay;
+pub mod djrole;
+pub mod help;
 pub mod history;
 pub mod leave;
+pub mod normalize;
 pub mod now;
 pub mod play;
 pub mod playlist;
@@ -8,3 +11,4 @@ pub mod playnow;
 pub mod queue;
 pub mod shuffle;
 pub mod volume;
+pub mod voteskip;
