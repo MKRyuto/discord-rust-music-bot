@@ -6,7 +6,7 @@ use serenity::{
 
 use crate::{
     music::player,
-    music::state::LoopMode,
+    music::state::{LoopMode, PlaylistLoadMode},
     permissions,
     ui::{player_panel, queue_panel},
     Data, Error,
@@ -127,6 +127,18 @@ pub async fn handle_event(
 
             update_component_to_player(ctx, data, component, guild_id).await?;
         }
+        player_panel::SELECT_VOLUME => {
+            let ComponentInteractionDataKind::StringSelect { values } = &component.data.kind else {
+                return Ok(());
+            };
+
+            let Some(volume) = values.first().and_then(|value| value.parse::<u8>().ok()) else {
+                return Ok(());
+            };
+
+            player::set_volume(ctx, data, guild_id, volume).await?;
+            respond_ephemeral(ctx, component, format!("Volume set to `{volume}%`.")).await?;
+        }
         player_panel::BTN_VOLUME_DOWN => {
             component.defer(ctx).await?;
             player::adjust_volume(ctx, data, guild_id, -10).await?;
@@ -171,6 +183,31 @@ pub async fn handle_event(
         player_panel::BTN_PLAYLISTS => {
             show_playlists(ctx, data, component, guild_id).await?;
         }
+        player_panel::SELECT_PLAYLIST_MODE => {
+            let ComponentInteractionDataKind::StringSelect { values } = &component.data.kind else {
+                return Ok(());
+            };
+
+            let Some(mode) = values
+                .first()
+                .and_then(|value| playlist_mode_from_value(value))
+            else {
+                return Ok(());
+            };
+
+            {
+                let state_lock = data.music.get(guild_id).await;
+                let mut state = state_lock.lock().await;
+                state.playlist_load_mode = mode;
+            }
+
+            respond_ephemeral(
+                ctx,
+                component,
+                format!("Playlist load mode set to `{}`.", playlist_mode_label(mode)),
+            )
+            .await?;
+        }
         player_panel::SELECT_PLAYLIST_LOAD => {
             let ComponentInteractionDataKind::StringSelect { values } = &component.data.kind else {
                 return Ok(());
@@ -180,7 +217,13 @@ pub async fn handle_event(
                 return Ok(());
             };
 
-            let message = load_playlist_from_select(ctx, data, guild_id, component, name).await;
+            let mode = {
+                let state_lock = data.music.get(guild_id).await;
+                let state = state_lock.lock().await;
+                state.playlist_load_mode
+            };
+            let message =
+                load_playlist_from_select(ctx, data, guild_id, component, name, mode).await;
             respond_ephemeral(ctx, component, message).await?;
         }
         player_panel::BTN_REFRESH | queue_panel::BTN_PLAYER => {
@@ -263,20 +306,29 @@ pub async fn handle_event(
                 return Ok(());
             };
 
-            let Some(position) = values.first().and_then(|value| value.parse::<usize>().ok())
-            else {
-                return Ok(());
-            };
+            let mut positions = values
+                .iter()
+                .filter_map(|value| value.parse::<usize>().ok())
+                .collect::<Vec<_>>();
+            positions.sort_unstable_by(|left, right| right.cmp(left));
+            positions.dedup();
 
-            let removed = player::remove_queued_track(data, guild_id, position).await;
+            let mut removed_count = 0;
+            for position in positions {
+                if player::remove_queued_track(data, guild_id, position)
+                    .await
+                    .is_some()
+                {
+                    removed_count += 1;
+                }
+            }
+
             update_component_to_queue(ctx, data, component, guild_id).await?;
             player_panel::update_player_message(ctx, data, guild_id)
                 .await
                 .ok();
 
-            if let Some(track) = removed {
-                tracing::info!(title = %track.title, position, "removed queued track from select menu");
-            }
+            tracing::info!(removed_count, "removed queued tracks from select menu");
         }
         queue_panel::SELECT_REMOVE_RANGE => {
             let ComponentInteractionDataKind::StringSelect { values } = &component.data.kind else {
@@ -310,6 +362,8 @@ fn requires_music_control(custom_id: &str) -> bool {
             | player_panel::BTN_LOOP
             | player_panel::SELECT_LOOP_MODE
             | player_panel::SELECT_PLAYLIST_LOAD
+            | player_panel::SELECT_PLAYLIST_MODE
+            | player_panel::SELECT_VOLUME
             | player_panel::BTN_VOLUME_DOWN
             | player_panel::BTN_VOLUME_UP
             | player_panel::BTN_VOLUME_50
@@ -354,6 +408,23 @@ fn loop_mode_from_value(value: &str) -> Option<LoopMode> {
     }
 }
 
+fn playlist_mode_from_value(value: &str) -> Option<PlaylistLoadMode> {
+    match value {
+        "append" => Some(PlaylistLoadMode::Append),
+        "replace" => Some(PlaylistLoadMode::Replace),
+        "playnow" => Some(PlaylistLoadMode::PlayNow),
+        _ => None,
+    }
+}
+
+fn playlist_mode_label(mode: PlaylistLoadMode) -> &'static str {
+    match mode {
+        PlaylistLoadMode::Append => "append",
+        PlaylistLoadMode::Replace => "replace",
+        PlaylistLoadMode::PlayNow => "playnow",
+    }
+}
+
 fn parse_range(value: &str) -> Option<(usize, usize)> {
     let (start, end) = value.split_once(':')?;
     Some((start.parse().ok()?, end.parse().ok()?))
@@ -382,6 +453,7 @@ async fn load_playlist_from_select(
     guild_id: serenity::GuildId,
     component: &serenity::ComponentInteraction,
     name: &str,
+    mode: PlaylistLoadMode,
 ) -> String {
     let tracks = match data.db.load_playlist(guild_id, name, component.user.id) {
         Ok(tracks) if !tracks.is_empty() => tracks,
@@ -394,16 +466,45 @@ async fn load_playlist_from_select(
     }
 
     let count = tracks.len();
-    {
-        let state_lock = data.music.get(guild_id).await;
-        let mut state = state_lock.lock().await;
-        state.queue.extend(tracks);
-        state.player_channel_id = Some(component.channel_id);
+
+    match mode {
+        PlaylistLoadMode::Append => {
+            let state_lock = data.music.get(guild_id).await;
+            let mut state = state_lock.lock().await;
+            state.queue.extend(tracks);
+            state.player_channel_id = Some(component.channel_id);
+        }
+        PlaylistLoadMode::Replace => {
+            let state_lock = data.music.get(guild_id).await;
+            let mut state = state_lock.lock().await;
+            state.queue.clear();
+            state.queue.extend(tracks);
+            state.player_channel_id = Some(component.channel_id);
+        }
+        PlaylistLoadMode::PlayNow => {
+            let mut tracks = tracks.into_iter();
+            let Some(first) = tracks.next() else {
+                return format!("Playlist `{name}` kosong atau tidak ditemukan.");
+            };
+
+            {
+                let state_lock = data.music.get(guild_id).await;
+                let mut state = state_lock.lock().await;
+                state.queue.extend(tracks);
+                state.player_channel_id = Some(component.channel_id);
+            }
+
+            if let Err(err) = player::play_now(ctx, data, guild_id, first).await {
+                return format!("Gagal play playlist: {err}");
+            }
+        }
     }
 
     player::persist_queue(data, guild_id).await;
-    if let Err(err) = player::start_if_idle(ctx, data, guild_id).await {
-        return format!("Gagal mulai playlist: {err}");
+    if mode != PlaylistLoadMode::PlayNow {
+        if let Err(err) = player::start_if_idle(ctx, data, guild_id).await {
+            return format!("Gagal mulai playlist: {err}");
+        }
     }
 
     player_panel::update_player_message(ctx, data, guild_id)
@@ -413,7 +514,10 @@ async fn load_playlist_from_select(
         .await
         .ok();
 
-    format!("Loaded playlist `{name}` with `{count}` track(s).")
+    format!(
+        "Loaded playlist `{name}` with `{count}` track(s) using `{}` mode.",
+        playlist_mode_label(mode)
+    )
 }
 
 async fn current_volume(data: &Data, guild_id: serenity::GuildId) -> u8 {
@@ -447,36 +551,24 @@ async fn show_playlists(
     guild_id: serenity::GuildId,
 ) -> Result<(), Error> {
     let playlists = data.db.list_playlists(guild_id)?;
-    let content = if playlists.is_empty() {
+    let has_playlists = !playlists.is_empty();
+    let content = if has_playlists {
+        "Pilih mode load dulu, terus pilih playlist yang mau dipakai.".to_string()
+    } else {
         "Belum ada saved playlist. Pakai `/playlist save name:<nama>` buat simpan queue sekarang."
             .to_string()
-    } else {
-        let list = playlists
-            .iter()
-            .take(10)
-            .map(|playlist| {
-                format!(
-                    "- `{}` - `{}` track(s)",
-                    playlist.name, playlist.track_count
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        format!(
-            "Saved playlists:\n{list}\n\nLoad pakai `/playlist load name:<nama>`. Save queue sekarang pakai `/playlist save name:<nama>`."
-        )
     };
 
+    let mut message = CreateInteractionResponseMessage::new()
+        .content(content)
+        .ephemeral(true);
+
+    if has_playlists {
+        message = message.components(player_panel::playlist_select_rows(playlists));
+    }
+
     component
-        .create_response(
-            ctx,
-            CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .content(content)
-                    .ephemeral(true),
-            ),
-        )
+        .create_response(ctx, CreateInteractionResponse::Message(message))
         .await?;
 
     Ok(())

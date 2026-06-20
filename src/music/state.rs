@@ -17,6 +17,13 @@ pub enum LoopMode {
     Queue,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaylistLoadMode {
+    Append,
+    Replace,
+    PlayNow,
+}
+
 impl LoopMode {
     pub fn next(self) -> Self {
         match self {
@@ -51,6 +58,7 @@ pub struct GuildMusicState {
     pub queue_message_id: Option<serenity::MessageId>,
     pub queue_channel_id: Option<serenity::ChannelId>,
     pub queue_page: usize,
+    pub playlist_load_mode: PlaylistLoadMode,
     pub skip_votes: HashSet<serenity::UserId>,
     pub recent_play_requests: HashMap<serenity::UserId, Instant>,
 }
@@ -72,6 +80,7 @@ impl Default for GuildMusicState {
             queue_message_id: None,
             queue_channel_id: None,
             queue_page: 0,
+            playlist_load_mode: PlaylistLoadMode::Append,
             skip_votes: HashSet::new(),
             recent_play_requests: HashMap::new(),
         }

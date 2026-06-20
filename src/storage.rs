@@ -75,7 +75,8 @@ impl Database {
                 play_cooldown_secs INTEGER NOT NULL DEFAULT 10,
                 max_queue_per_user INTEGER NOT NULL DEFAULT 10,
                 vote_skip_percent INTEGER NOT NULL DEFAULT 50,
-                normalize_cap_percent INTEGER NOT NULL DEFAULT 85
+                normalize_cap_percent INTEGER NOT NULL DEFAULT 85,
+                idle_timeout_secs INTEGER NOT NULL DEFAULT 60
             );
 
             CREATE TABLE IF NOT EXISTS dj_roles (
@@ -174,6 +175,7 @@ impl Database {
             "ALTER TABLE guild_settings ADD COLUMN max_queue_per_user INTEGER NOT NULL DEFAULT 10",
             "ALTER TABLE guild_settings ADD COLUMN vote_skip_percent INTEGER NOT NULL DEFAULT 50",
             "ALTER TABLE guild_settings ADD COLUMN normalize_cap_percent INTEGER NOT NULL DEFAULT 85",
+            "ALTER TABLE guild_settings ADD COLUMN idle_timeout_secs INTEGER NOT NULL DEFAULT 60",
         ] {
             if let Err(err) = conn.execute(statement, []) {
                 if !err.to_string().contains("duplicate column name") {
@@ -511,6 +513,41 @@ impl Database {
             "normalize_cap_percent",
             percent.clamp(1, 200) as i64,
         )
+    }
+
+    pub fn idle_timeout_secs(&self, guild_id: serenity::GuildId) -> Result<u64, Error> {
+        Ok(self
+            .guild_setting_i64(guild_id, "idle_timeout_secs", 60)?
+            .clamp(10, 600) as u64)
+    }
+
+    pub fn set_idle_timeout_secs(
+        &self,
+        guild_id: serenity::GuildId,
+        seconds: u64,
+    ) -> Result<(), Error> {
+        self.set_guild_setting_i64(guild_id, "idle_timeout_secs", seconds.clamp(10, 600) as i64)
+    }
+
+    pub fn reset_guild_settings(&self, guild_id: serenity::GuildId) -> Result<(), Error> {
+        let conn = self.connect()?;
+        conn.execute(
+            "
+            UPDATE guild_settings
+            SET volume_percent = 100,
+                autoplay_enabled = 0,
+                normalize_enabled = 0,
+                play_cooldown_secs = 10,
+                max_queue_per_user = 10,
+                vote_skip_percent = 50,
+                normalize_cap_percent = 85,
+                idle_timeout_secs = 60
+            WHERE guild_id = ?1
+            ",
+            params![guild_id.get().to_string()],
+        )?;
+
+        Ok(())
     }
 
     fn guild_setting_i64(

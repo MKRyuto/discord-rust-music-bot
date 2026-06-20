@@ -26,6 +26,8 @@ pub const BTN_VOLUME_100: &str = "music:volume_100";
 pub const BTN_VOLUME_150: &str = "music:volume_150";
 pub const SELECT_LOOP_MODE: &str = "music:loop_select";
 pub const SELECT_PLAYLIST_LOAD: &str = "music:playlist_load_select";
+pub const SELECT_VOLUME: &str = "music:volume_select";
+pub const SELECT_PLAYLIST_MODE: &str = "music:playlist_mode_select";
 
 pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> CreateEmbed {
     let state_lock = data.music.get(guild_id).await;
@@ -78,7 +80,7 @@ pub fn build_player_buttons(
     loop_mode: LoopMode,
     normalize_enabled: bool,
     autoplay_enabled: bool,
-    playlists: Vec<crate::storage::PlaylistSummary>,
+    _playlists: Vec<crate::storage::PlaylistSummary>,
 ) -> Vec<CreateActionRow> {
     let pause_label = if is_paused { "Resume" } else { "Pause" };
     let normalize_label = if normalize_enabled {
@@ -138,17 +140,14 @@ pub fn build_player_buttons(
             CreateButton::new(BTN_SHUFFLE)
                 .label("Shuffle")
                 .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_PLAYLISTS)
+                .label("Playlists")
+                .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_NORMALIZE)
                 .label(normalize_label)
                 .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_AUTOPLAY)
                 .label(autoplay_label)
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(BTN_VOLUME_50)
-                .label("50%")
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(BTN_VOLUME_100)
-                .label("100%")
                 .style(ButtonStyle::Secondary),
         ]),
         CreateActionRow::SelectMenu(
@@ -162,9 +161,19 @@ pub fn build_player_buttons(
             .min_values(1)
             .max_values(1),
         ),
+        CreateActionRow::SelectMenu(
+            CreateSelectMenu::new(
+                SELECT_VOLUME,
+                CreateSelectMenuKind::String {
+                    options: volume_options(),
+                },
+            )
+            .placeholder("Volume preset")
+            .min_values(1)
+            .max_values(1),
+        ),
     ]
     .into_iter()
-    .chain(playlist_select_row(playlists))
     .collect()
 }
 
@@ -204,7 +213,29 @@ fn loop_options(current: LoopMode) -> Vec<CreateSelectMenuOption> {
     .collect()
 }
 
-fn playlist_select_row(playlists: Vec<crate::storage::PlaylistSummary>) -> Option<CreateActionRow> {
+pub fn playlist_select_rows(
+    playlists: Vec<crate::storage::PlaylistSummary>,
+) -> Vec<CreateActionRow> {
+    let mut rows = vec![CreateActionRow::SelectMenu(
+        CreateSelectMenu::new(
+            SELECT_PLAYLIST_MODE,
+            CreateSelectMenuKind::String {
+                options: vec![
+                    CreateSelectMenuOption::new("Append playlists", "append")
+                        .description("Playlist menu appends to queue")
+                        .default_selection(true),
+                    CreateSelectMenuOption::new("Replace queue", "replace")
+                        .description("Playlist menu replaces queued tracks"),
+                    CreateSelectMenuOption::new("Play now", "playnow")
+                        .description("Playlist menu starts selected playlist now"),
+                ],
+            },
+        )
+        .placeholder("Playlist load mode")
+        .min_values(1)
+        .max_values(1),
+    )];
+
     let options = playlists
         .into_iter()
         .take(25)
@@ -218,10 +249,10 @@ fn playlist_select_row(playlists: Vec<crate::storage::PlaylistSummary>) -> Optio
         .collect::<Vec<_>>();
 
     if options.is_empty() {
-        return None;
+        return rows;
     }
 
-    Some(CreateActionRow::SelectMenu(
+    rows.push(CreateActionRow::SelectMenu(
         CreateSelectMenu::new(
             SELECT_PLAYLIST_LOAD,
             CreateSelectMenuKind::String { options },
@@ -229,7 +260,16 @@ fn playlist_select_row(playlists: Vec<crate::storage::PlaylistSummary>) -> Optio
         .placeholder("Load playlist")
         .min_values(1)
         .max_values(1),
-    ))
+    ));
+
+    rows
+}
+
+fn volume_options() -> Vec<CreateSelectMenuOption> {
+    [25, 50, 75, 100, 125, 150, 200]
+        .into_iter()
+        .map(|volume| CreateSelectMenuOption::new(format!("{volume}%"), volume.to_string()))
+        .collect()
 }
 
 fn truncate_option(value: &str, max_chars: usize) -> String {

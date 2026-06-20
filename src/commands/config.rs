@@ -11,6 +11,9 @@ use crate::{permissions, Ctx, Error};
         "maxqueue",
         "voteskip",
         "normalize_cap",
+        "default_volume",
+        "idle_timeout",
+        "reset",
         "allow_channel",
         "unallow_channel",
         "allowed_channels",
@@ -33,11 +36,13 @@ pub async fn show(ctx: Ctx<'_>) -> Result<(), Error> {
 
     let db = &ctx.data().db;
     ctx.say(format!(
-        "Music config:\n- Cooldown: `{}` detik\n- Max queue per user: `{}` lagu\n- Vote skip threshold: `{}%`\n- Normalize cap: `{}%`\n- Allowed channels: `{}`\n- Blocked terms: `{}`",
+        "Music config:\n- Default volume: `{}%`\n- Cooldown: `{}` detik\n- Max queue per user: `{}` lagu\n- Vote skip threshold: `{}%`\n- Normalize cap: `{}%`\n- Idle timeout: `{}` detik\n- Allowed channels: `{}`\n- Blocked terms: `{}`",
+        db.guild_volume(guild_id)?,
         db.play_cooldown_secs(guild_id)?,
         db.max_queue_per_user(guild_id)?,
         db.vote_skip_percent(guild_id)?,
         db.normalize_cap_percent(guild_id)?,
+        db.idle_timeout_secs(guild_id)?,
         db.allowed_channels(guild_id)?.len(),
         db.blocked_terms(guild_id)?.len(),
     ))
@@ -126,6 +131,64 @@ pub async fn normalize_cap(
     ctx.data().db.set_normalize_cap_percent(guild_id, percent)?;
     ctx.say(format!("Normalize cap set to `{percent}%`."))
         .await?;
+
+    Ok(())
+}
+
+/// Set default/current volume server.
+#[poise::command(slash_command, rename = "default-volume")]
+pub async fn default_volume(
+    ctx: Ctx<'_>,
+    #[description = "Volume 0 sampai 200 persen"] percent: u8,
+) -> Result<(), Error> {
+    if !permissions::require_music_setup(ctx).await? {
+        return Ok(());
+    }
+
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    let percent = percent.min(200);
+    crate::music::player::set_volume(ctx.serenity_context(), ctx.data(), guild_id, percent).await?;
+    ctx.say(format!("Default/current volume set to `{percent}%`."))
+        .await?;
+
+    Ok(())
+}
+
+/// Set idle timeout sebelum bot leave otomatis.
+#[poise::command(slash_command, rename = "idle-timeout")]
+pub async fn idle_timeout(
+    ctx: Ctx<'_>,
+    #[description = "Timeout 10 sampai 600 detik"] seconds: u64,
+) -> Result<(), Error> {
+    if !permissions::require_music_setup(ctx).await? {
+        return Ok(());
+    }
+
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    let seconds = seconds.clamp(10, 600);
+    ctx.data().db.set_idle_timeout_secs(guild_id, seconds)?;
+    ctx.say(format!("Idle timeout set to `{seconds}` detik."))
+        .await?;
+
+    Ok(())
+}
+
+/// Reset setting server ke default.
+#[poise::command(slash_command)]
+pub async fn reset(ctx: Ctx<'_>) -> Result<(), Error> {
+    if !permissions::require_music_setup(ctx).await? {
+        return Ok(());
+    }
+
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    ctx.data().db.reset_guild_settings(guild_id)?;
+    ctx.say("Music config reset to defaults.").await?;
 
     Ok(())
 }

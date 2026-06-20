@@ -137,9 +137,9 @@ pub async fn build_queue_buttons(data: &Data, guild_id: serenity::GuildId) -> Ve
     if !options.is_empty() {
         rows.push(CreateActionRow::SelectMenu(
             CreateSelectMenu::new(SELECT_REMOVE, CreateSelectMenuKind::String { options })
-                .placeholder("Remove a queued track")
+                .placeholder("Remove queued track(s)")
                 .min_values(1)
-                .max_values(1),
+                .max_values(PAGE_SIZE as u8),
         ));
 
         rows.push(CreateActionRow::SelectMenu(

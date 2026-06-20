@@ -43,6 +43,7 @@ async fn main() -> Result<(), Error> {
             commands::playnow::playnow(),
             commands::replay::replay(),
             commands::previous::previous(),
+            commands::seek::seek(),
             commands::voteskip::voteskip(),
             commands::history::history(),
             commands::stats::stats(),

@@ -12,6 +12,7 @@ pub mod playnow;
 pub mod previous;
 pub mod queue;
 pub mod replay;
+pub mod seek;
 pub mod shuffle;
 pub mod stats;
 pub mod volume;

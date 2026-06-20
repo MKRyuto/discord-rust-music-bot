@@ -14,6 +14,8 @@ use crate::{
         "remove",
         "remove_search",
         "remove_range",
+        "mine",
+        "remove_mine",
         "jump",
         "move_track"
     )
@@ -73,6 +75,73 @@ pub async fn clear(ctx: Ctx<'_>) -> Result<(), Error> {
         .ok();
 
     ctx.say(format!("Cleared `{cleared}` queued track(s)."))
+        .await?;
+
+    Ok(())
+}
+
+/// Lihat lagu yang lu request di queue.
+#[poise::command(slash_command)]
+pub async fn mine(ctx: Ctx<'_>) -> Result<(), Error> {
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    let user_id = ctx.author().id;
+
+    let tracks = {
+        let state_lock = ctx.data().music.get(guild_id).await;
+        let state = state_lock.lock().await;
+        state
+            .queue
+            .iter()
+            .enumerate()
+            .filter(|(_, track)| track.requested_by == user_id)
+            .take(15)
+            .map(|(idx, track)| format!("`{}.` **{}**", idx + 1, track.title))
+            .collect::<Vec<_>>()
+    };
+
+    if tracks.is_empty() {
+        ctx.say("Lu belum punya lagu di queue.").await?;
+    } else {
+        ctx.say(format!("Your queued tracks:\n{}", tracks.join("\n")))
+            .await?;
+    }
+
+    Ok(())
+}
+
+/// Hapus semua lagu yang lu request dari queue.
+#[poise::command(slash_command, rename = "remove-mine")]
+pub async fn remove_mine(ctx: Ctx<'_>) -> Result<(), Error> {
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    let user_id = ctx.author().id;
+
+    let removed = {
+        let state_lock = ctx.data().music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        let before = state.queue.len();
+        state.queue.retain(|track| track.requested_by != user_id);
+        let removed = before - state.queue.len();
+        if removed > 0 {
+            state.queue_page = 0;
+        }
+        removed
+    };
+
+    if removed > 0 {
+        player::persist_queue(ctx.data(), guild_id).await;
+        queue_panel::update_queue_message(ctx.serenity_context(), ctx.data(), guild_id)
+            .await
+            .ok();
+        player_panel::update_player_message(ctx.serenity_context(), ctx.data(), guild_id)
+            .await
+            .ok();
+    }
+
+    ctx.say(format!("Removed `{removed}` of your queued track(s)."))
         .await?;
 
     Ok(())

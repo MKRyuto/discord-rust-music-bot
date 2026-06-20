@@ -1,6 +1,6 @@
 # Discord Rust Music Bot
 
-> Version 1.4.3 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
+> Version 1.4.4 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
 
 Discord Rust Music Bot is a slash-command music bot with per-server queues, interactive embeds, button controls, and YouTube/search playback. It is designed as a clean Rust codebase for a practical Discord music bot, not a giant all-in-one framework.
 
@@ -21,6 +21,7 @@ Discord Rust Music Bot is a slash-command music bot with per-server queues, inte
 - Player panel loop and playlist select menus
 - Queue panel with paginated navigation
 - Queue panel page jump, remove range, and clear confirmation
+- Queue multi-remove and personal queue cleanup
 - Volume control with persisted guild settings
 - Optional soft volume guard for loud tracks
 - DJ role permissions for playback controls
@@ -31,6 +32,8 @@ Discord Rust Music Bot is a slash-command music bot with per-server queues, inte
 - Replay and previous-track controls
 - Per-user and server music stats
 - Playlist append, rename, and load modes
+- Seek command
+- Volume select menu and playlist load mode selector
 - Discord bot presence showing `/help | /play`
 - Queue shuffle
 - Saved playlists backed by SQLite
@@ -176,6 +179,7 @@ winget upgrade Gyan.FFmpeg.Essentials
 | `/playnow query_or_url:<text>` | Play a track immediately while keeping the existing queue. |
 | `/replay` | Replay the current track from the beginning. |
 | `/previous` | Play the previous track. |
+| `/seek position:<text>` | Seek current track, for example `90`, `1:30`, or `01:02:03`. |
 | `/help` | Show bot command help. |
 | `/voteskip` | Vote to skip the current track. |
 | `/history limit:<number>` | Show the most played tracks in the current server. |
@@ -186,6 +190,9 @@ winget upgrade Gyan.FFmpeg.Essentials
 | `/config maxqueue limit:<number>` | Set max active queued tracks per user. |
 | `/config voteskip percent:<number>` | Set vote skip threshold. |
 | `/config normalize-cap percent:<number>` | Set effective volume cap when normalize is enabled. |
+| `/config default-volume percent:<number>` | Set default/current server volume. |
+| `/config idle-timeout seconds:<number>` | Set auto-leave idle timeout. |
+| `/config reset` | Reset music config to defaults. |
 | `/config allow-channel channel:<channel>` | Limit music controls to a channel. |
 | `/config unallow-channel channel:<channel>` | Remove a channel from the allowlist. |
 | `/config allowed-channels` | Show allowed music channels. |
@@ -195,6 +202,8 @@ winget upgrade Gyan.FFmpeg.Essentials
 | `/queue` | Show the queue panel. |
 | `/queue show` | Show the queue panel. |
 | `/queue clear` | Clear queued tracks. |
+| `/queue mine` | Show your queued tracks. |
+| `/queue remove-mine` | Remove your queued tracks. |
 | `/queue remove position:<number>` | Remove a queued track by queue number. |
 | `/queue remove-search query:<text>` | Remove the first queued track matching title or URL text. |
 | `/queue remove-range start:<number> end:<number>` | Remove several queued tracks at once. |
@@ -230,11 +239,12 @@ Player panel:
 - Loop mode select menu
 - Volume down
 - Volume up
-- Volume presets
+- Volume select menu
 - Shuffle queue
 - Normalize toggle
 - Autoplay toggle
 - Playlist load select menu
+- Playlist load mode select menu
 - Refresh
 
 Queue panel:
@@ -246,7 +256,7 @@ Queue panel:
 - Page jump select menu
 - Remove range select menu
 - Player
-- Remove track select menu
+- Multi-remove track select menu
 
 ## Permissions
 

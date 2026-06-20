@@ -9,8 +9,6 @@ use crate::music::track::Track;
 use crate::ui::player_panel;
 use crate::{Data, Error};
 
-const IDLE_DISCONNECT_AFTER: Duration = Duration::from_secs(60);
-
 fn is_http_url(input: &str) -> bool {
     url::Url::parse(input)
         .map(|url| matches!(url.scheme(), "http" | "https"))
@@ -749,7 +747,12 @@ async fn notify_playback_issue(
 
 fn spawn_idle_disconnect(ctx: serenity::Context, data: Data, guild_id: serenity::GuildId) {
     tokio::spawn(async move {
-        tokio::time::sleep(IDLE_DISCONNECT_AFTER).await;
+        let idle_timeout = data
+            .db
+            .idle_timeout_secs(guild_id)
+            .map(Duration::from_secs)
+            .unwrap_or_else(|_| Duration::from_secs(60));
+        tokio::time::sleep(idle_timeout).await;
 
         let should_disconnect = {
             let state_lock = data.music.get(guild_id).await;
@@ -773,6 +776,29 @@ fn spawn_idle_disconnect(ctx: serenity::Context, data: Data, guild_id: serenity:
             }
         }
     });
+}
+
+pub async fn seek(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+    position: Duration,
+) -> Result<(), Error> {
+    let handle = {
+        let state_lock = data.music.get(guild_id).await;
+        let state = state_lock.lock().await;
+        state
+            .current_handle
+            .clone()
+            .ok_or("Tidak ada lagu yang sedang diputar.")?
+    };
+
+    handle.seek_async(position).await?;
+    player_panel::update_player_message(ctx, data, guild_id)
+        .await
+        .ok();
+
+    Ok(())
 }
 
 struct TrackPlayableNotifier {
