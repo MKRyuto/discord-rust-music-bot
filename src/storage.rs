@@ -20,6 +20,8 @@ pub struct PlaylistSummary {
     pub track_count: usize,
 }
 
+pub type RestoredQueues = HashMap<serenity::GuildId, (Option<Track>, VecDeque<Track>)>;
+
 #[derive(Clone, Debug)]
 pub struct HistoryTrack {
     pub title: String,
@@ -71,7 +73,7 @@ impl Database {
                 guild_id TEXT PRIMARY KEY,
                 volume_percent INTEGER NOT NULL DEFAULT 100,
                 autoplay_enabled INTEGER NOT NULL DEFAULT 0,
-                normalize_enabled INTEGER NOT NULL DEFAULT 0,
+                normalize_enabled INTEGER NOT NULL DEFAULT 1,
                 play_cooldown_secs INTEGER NOT NULL DEFAULT 10,
                 max_queue_per_user INTEGER NOT NULL DEFAULT 10,
                 vote_skip_percent INTEGER NOT NULL DEFAULT 50,
@@ -162,7 +164,7 @@ impl Database {
         }
 
         if let Err(err) = conn.execute(
-            "ALTER TABLE guild_settings ADD COLUMN normalize_enabled INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE guild_settings ADD COLUMN normalize_enabled INTEGER NOT NULL DEFAULT 1",
             [],
         ) {
             if !err.to_string().contains("duplicate column name") {
@@ -233,7 +235,7 @@ impl Database {
                 |row| row.get::<_, i64>(0),
             )
             .optional()?
-            .unwrap_or(0)
+            .unwrap_or(1)
             != 0;
 
         Ok(enabled)
@@ -536,7 +538,7 @@ impl Database {
             UPDATE guild_settings
             SET volume_percent = 100,
                 autoplay_enabled = 0,
-                normalize_enabled = 0,
+                normalize_enabled = 1,
                 play_cooldown_secs = 10,
                 max_queue_per_user = 10,
                 vote_skip_percent = 50,
@@ -845,9 +847,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn load_all_queues(
-        &self,
-    ) -> Result<HashMap<serenity::GuildId, (Option<Track>, VecDeque<Track>)>, Error> {
+    pub fn load_all_queues(&self) -> Result<RestoredQueues, Error> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
             "
@@ -879,8 +879,7 @@ impl Database {
             ))
         })?;
 
-        let mut queues: HashMap<serenity::GuildId, (Option<Track>, VecDeque<Track>)> =
-            HashMap::new();
+        let mut queues = RestoredQueues::new();
 
         for row in rows {
             let (guild_id_raw, track, is_now_playing) = row?;

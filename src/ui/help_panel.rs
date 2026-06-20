@@ -22,7 +22,7 @@ pub fn category_embed(category: &str) -> CreateEmbed {
     let (title, commands, note) = match category {
         "playback" => (
             "Help: Playback",
-            "`/play`, `/playnow`, `/now`, `/replay`, `/previous`, `/seek`, `/volume`, `/voteskip`, `/shuffle`, `/leave`",
+            "`/play`, `/playnow`, `/now`, `/replay`, `/previous`, `/seek`, `/volume`, `/normalize`, `/voteskip`, `/shuffle`, `/leave`",
             "Player panel juga menyediakan pause/resume, skip, previous, replay, stop, loop, autoplay, normalize, dan volume.",
         ),
         "queue" => (

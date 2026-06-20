@@ -12,7 +12,6 @@ pub const BTN_PREVIOUS: &str = "music:previous";
 pub const BTN_REPLAY: &str = "music:replay";
 pub const BTN_STOP: &str = "music:stop";
 pub const BTN_QUEUE: &str = "music:queue";
-pub const BTN_LOOP: &str = "music:loop";
 pub const BTN_REFRESH: &str = "music:refresh_player";
 pub const BTN_VOLUME_DOWN: &str = "music:volume_down";
 pub const BTN_VOLUME_UP: &str = "music:volume_up";
@@ -77,7 +76,6 @@ pub fn build_player_buttons(
     loop_mode: LoopMode,
     normalize_enabled: bool,
     autoplay_enabled: bool,
-    _playlists: Vec<crate::storage::PlaylistSummary>,
 ) -> Vec<CreateActionRow> {
     let pause_label = if is_paused { "Resume" } else { "Pause" };
     let normalize_label = if normalize_enabled {
@@ -182,7 +180,6 @@ pub async fn build_player_components(
     let state = state_lock.lock().await;
     let normalize_enabled = data.db.normalize_enabled(guild_id).unwrap_or(false);
     let autoplay_enabled = data.db.autoplay_enabled(guild_id).unwrap_or(false);
-    let playlists = data.db.list_playlists(guild_id).unwrap_or_default();
     build_player_buttons(
         state.is_paused,
         state.now_playing.is_some(),
@@ -191,7 +188,6 @@ pub async fn build_player_components(
         state.loop_mode,
         normalize_enabled,
         autoplay_enabled,
-        playlists,
     )
 }
 

@@ -1,6 +1,6 @@
 # Discord Rust Music Bot
 
-> Version 1.4.6 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
+> Version 1.5.0 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
 
 Discord Rust Music Bot is a slash-command music bot with per-server queues, interactive embeds, button controls, and YouTube/search playback. It is designed as a clean Rust codebase for a practical Discord music bot, not a giant all-in-one framework.
 
@@ -23,7 +23,7 @@ Discord Rust Music Bot is a slash-command music bot with per-server queues, inte
 - Queue panel page jump, remove range, and clear confirmation
 - Queue multi-remove and personal queue cleanup
 - Volume control with persisted guild settings
-- Optional soft volume guard for loud tracks
+- True FFmpeg loudness normalization for uneven track volume, enabled by default
 - DJ role permissions for playback controls
 - Vote skip for non-DJ listeners
 - Configurable per-user play cooldown and queue limit
@@ -215,7 +215,7 @@ winget upgrade Gyan.FFmpeg.Essentials
 | `/now` | Show the player panel. |
 | `/leave` | Stop playback and disconnect from voice. |
 | `/autoplay enabled:<true/false>` | Toggle history-based autoplay for the current server. |
-| `/normalize enabled:<true/false>` | Toggle soft volume guard for loud tracks. |
+| `/normalize enabled:<true/false>` | Toggle FFmpeg loudnorm and dynamic normalization. |
 | `/djrole add role:<role>` | Allow a role to control playback. |
 | `/djrole remove role:<role>` | Remove a role from playback control. |
 | `/djrole list` | Show roles allowed to control playback. |

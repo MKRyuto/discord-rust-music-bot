@@ -1,10 +1,10 @@
 use crate::{permissions, ui::player_panel, Ctx, Error};
 
-/// Enable atau disable soft volume guard.
+/// Enable atau disable FFmpeg loudness normalization.
 #[poise::command(slash_command)]
 pub async fn normalize(
     ctx: Ctx<'_>,
-    #[description = "Nyalakan soft volume guard"] enabled: bool,
+    #[description = "Nyalakan true loudness normalization"] enabled: bool,
 ) -> Result<(), Error> {
     if !permissions::require_music_control(ctx).await? {
         return Ok(());
@@ -21,7 +21,7 @@ pub async fn normalize(
 
     let status = if enabled { "enabled" } else { "disabled" };
     ctx.say(format!(
-        "Normalize `{status}`. Mode ini pakai soft volume guard supaya track yang terlalu keras tidak terlalu nusuk."
+        "Normalize `{status}`. FFmpeg loudnorm berlaku mulai track berikutnya atau setelah replay."
     ))
     .await?;
 

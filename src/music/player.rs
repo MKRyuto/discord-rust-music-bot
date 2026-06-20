@@ -1,7 +1,10 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    process::{Command, Stdio},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use poise::serenity_prelude as serenity;
-use songbird::input::YoutubeDl;
+use songbird::input::{ChildContainer, Input, YoutubeDl};
 use songbird::tracks::{ReadyState, TrackHandle};
 use songbird::{Event, EventContext, EventHandler, TrackEvent};
 
@@ -21,6 +24,83 @@ fn youtube_dl_for(data: &Data, query_or_url: String) -> YoutubeDl<'static> {
     } else {
         YoutubeDl::new_search(data.http_client.clone(), query_or_url)
     }
+}
+
+fn playback_input(
+    data: &Data,
+    guild_id: serenity::GuildId,
+    source: &str,
+    start_at: Option<Duration>,
+) -> Result<Input, Error> {
+    let normalize = data.db.normalize_enabled(guild_id)?;
+    if !normalize {
+        return Ok(youtube_dl_for(data, source.to_string()).into());
+    }
+
+    let ytdl_source = if is_http_url(source) {
+        source.to_string()
+    } else {
+        format!("ytsearch1:{source}")
+    };
+    let mut downloader = Command::new("yt-dlp")
+        .args([
+            "-f",
+            "ba[abr>0][vcodec=none]/best",
+            "--no-playlist",
+            "--no-warnings",
+            "-o",
+            "-",
+            &ytdl_source,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("Gagal menjalankan yt-dlp untuk audio pipeline: {err}"))?;
+    let downloader_stdout = downloader
+        .stdout
+        .take()
+        .ok_or("Gagal membuka stream yt-dlp.")?;
+
+    let filter = audio_filter();
+    let mut ffmpeg_args = vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "error".to_string(),
+    ];
+    if let Some(position) = start_at.filter(|position| !position.is_zero()) {
+        ffmpeg_args.push("-ss".to_string());
+        ffmpeg_args.push(format!("{:.3}", position.as_secs_f64()));
+    }
+    ffmpeg_args.extend([
+        "-i".to_string(),
+        "pipe:0".to_string(),
+        "-vn".to_string(),
+        "-af".to_string(),
+        filter.clone(),
+        "-ac".to_string(),
+        "2".to_string(),
+        "-ar".to_string(),
+        "48000".to_string(),
+        "-f".to_string(),
+        "wav".to_string(),
+        "pipe:1".to_string(),
+    ]);
+
+    let processor = Command::new("ffmpeg")
+        .args(ffmpeg_args)
+        .stdin(Stdio::from(downloader_stdout))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("Gagal menjalankan FFmpeg audio pipeline: {err}"))?;
+
+    tracing::info!(filter, "using FFmpeg loudness normalization pipeline");
+    Ok(ChildContainer::new(vec![downloader, processor]).into())
+}
+
+fn audio_filter() -> String {
+    "loudnorm=I=-16:LRA=11:TP=-1.5,dynaudnorm=f=250:g=15:p=0.9:m=8".to_string()
 }
 
 pub async fn ensure_guild_settings(data: &Data, guild_id: serenity::GuildId) -> Result<(), Error> {
@@ -185,12 +265,10 @@ pub async fn remove_queued_track_matching(
     let removed = {
         let state_lock = data.music.get(guild_id).await;
         let mut state = state_lock.lock().await;
-        let Some(index) = state.queue.iter().position(|track| {
+        let index = state.queue.iter().position(|track| {
             track.title.to_lowercase().contains(&needle)
                 || track.url.to_lowercase().contains(&needle)
-        }) else {
-            return None;
-        };
+        })?;
 
         let removed = state.queue.remove(index).map(|track| (index + 1, track));
         if removed.is_some() {
@@ -605,6 +683,16 @@ pub async fn play_track(
     guild_id: serenity::GuildId,
     track: Track,
 ) -> Result<(), Error> {
+    play_track_at(ctx, data, guild_id, track, None).await
+}
+
+async fn play_track_at(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+    track: Track,
+    start_at: Option<Duration>,
+) -> Result<(), Error> {
     ensure_guild_settings(data, guild_id).await?;
 
     let manager = songbird::get(ctx)
@@ -620,8 +708,8 @@ pub async fn play_track(
 
     tracing::info!(title = %track.title, source = %track.url, "starting track playback");
 
-    let input = youtube_dl_for(data, track.url.clone());
-    let track_handle = handler.play_input(input.into());
+    let input = playback_input(data, guild_id, &track.url, start_at)?;
+    let track_handle = handler.play_input(input);
 
     {
         let state_lock = data.music.get(guild_id).await;
@@ -639,6 +727,7 @@ pub async fn play_track(
             data: data.clone(),
             guild_id,
             track: track.clone(),
+            record_history: start_at.is_none(),
         },
     )?;
 
@@ -784,16 +873,37 @@ pub async fn seek(
     guild_id: serenity::GuildId,
     position: Duration,
 ) -> Result<(), Error> {
-    let handle = {
-        let state_lock = data.music.get(guild_id).await;
-        let state = state_lock.lock().await;
-        state
-            .current_handle
-            .clone()
-            .ok_or("Tidak ada lagu yang sedang diputar.")?
-    };
+    let filtered = data.db.normalize_enabled(guild_id)?;
+    if filtered {
+        let (handle, track) = {
+            let state_lock = data.music.get(guild_id).await;
+            let mut state = state_lock.lock().await;
+            let track = state
+                .now_playing
+                .clone()
+                .ok_or("Tidak ada lagu yang sedang diputar.")?;
+            let handle = state.current_handle.take();
+            state.suppress_next_end = handle.is_some();
+            state.is_paused = false;
+            (handle, track)
+        };
 
-    handle.seek_async(position).await?;
+        if let Some(handle) = handle {
+            handle.stop().ok();
+        }
+        play_track_at(ctx, data, guild_id, track, Some(position)).await?;
+    } else {
+        let handle = {
+            let state_lock = data.music.get(guild_id).await;
+            let state = state_lock.lock().await;
+            state
+                .current_handle
+                .clone()
+                .ok_or("Tidak ada lagu yang sedang diputar.")?
+        };
+        handle.seek_async(position).await?;
+    }
+
     player_panel::update_player_message(ctx, data, guild_id)
         .await
         .ok();
@@ -805,6 +915,7 @@ struct TrackPlayableNotifier {
     data: Data,
     guild_id: serenity::GuildId,
     track: Track,
+    record_history: bool,
 }
 
 #[async_trait::async_trait]
@@ -823,8 +934,10 @@ impl EventHandler for TrackPlayableNotifier {
             }
         }
 
-        if let Err(err) = self.data.db.record_history(self.guild_id, &self.track) {
-            tracing::warn!("failed to record track history: {err:?}");
+        if self.record_history {
+            if let Err(err) = self.data.db.record_history(self.guild_id, &self.track) {
+                tracing::warn!("failed to record track history: {err:?}");
+            }
         }
 
         Some(Event::Cancel)

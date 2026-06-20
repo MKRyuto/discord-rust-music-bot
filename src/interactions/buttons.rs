@@ -120,15 +120,6 @@ pub async fn handle_event(
             component.defer(ctx).await?;
             player::stop(ctx, data, guild_id).await?;
         }
-        player_panel::BTN_LOOP => {
-            {
-                let state_lock = data.music.get(guild_id).await;
-                let mut state = state_lock.lock().await;
-                state.loop_mode = state.loop_mode.next();
-            }
-
-            update_component_to_player(ctx, data, component, guild_id).await?;
-        }
         player_panel::SELECT_LOOP_MODE => {
             let ComponentInteractionDataKind::StringSelect { values } = &component.data.kind else {
                 return Ok(());
@@ -366,7 +357,6 @@ fn requires_music_control(custom_id: &str) -> bool {
             | player_panel::BTN_PREVIOUS
             | player_panel::BTN_REPLAY
             | player_panel::BTN_STOP
-            | player_panel::BTN_LOOP
             | player_panel::SELECT_LOOP_MODE
             | player_panel::SELECT_PLAYLIST_LOAD
             | player_panel::SELECT_PLAYLIST_MODE
@@ -378,7 +368,6 @@ fn requires_music_control(custom_id: &str) -> bool {
             | player_panel::BTN_AUTOPLAY
             | queue_panel::BTN_CLEAR
             | queue_panel::BTN_CLEAR_CONFIRM
-            | queue_panel::SELECT_PAGE
             | queue_panel::SELECT_REMOVE_RANGE
             | queue_panel::SELECT_REMOVE
     )
