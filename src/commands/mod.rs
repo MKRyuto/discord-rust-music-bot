@@ -1,4 +1,5 @@
 pub mod autoplay;
+pub mod config;
 pub mod djrole;
 pub mod help;
 pub mod history;

@@ -1,3 +1,5 @@
+use poise::serenity_prelude as serenity;
+
 use crate::{
     music::{player, track::Track},
     permissions,
@@ -13,6 +15,31 @@ use crate::{
 )]
 pub async fn playlist(_ctx: Ctx<'_>) -> Result<(), Error> {
     Ok(())
+}
+
+pub async fn autocomplete_playlist(
+    ctx: Ctx<'_>,
+    partial: &str,
+) -> Vec<serenity::AutocompleteChoice> {
+    let Some(guild_id) = ctx.guild_id() else {
+        return Vec::new();
+    };
+
+    match ctx.data().db.search_playlists(guild_id, partial, 10) {
+        Ok(playlists) => playlists
+            .into_iter()
+            .map(|playlist| {
+                serenity::AutocompleteChoice::new(
+                    format!("{} [{} track(s)]", playlist.name, playlist.track_count),
+                    playlist.name,
+                )
+            })
+            .collect(),
+        Err(err) => {
+            tracing::warn!("playlist autocomplete failed: {err:?}");
+            Vec::new()
+        }
+    }
 }
 
 /// Simpan now playing + queue sebagai playlist.
@@ -54,7 +81,9 @@ pub async fn save(
 #[poise::command(slash_command)]
 pub async fn load(
     ctx: Ctx<'_>,
-    #[description = "Nama playlist"] name: String,
+    #[description = "Nama playlist"]
+    #[autocomplete = "autocomplete_playlist"]
+    name: String,
 ) -> Result<(), Error> {
     if !permissions::require_music_control(ctx).await? {
         return Ok(());
@@ -77,12 +106,13 @@ pub async fn load(
         return Ok(());
     }
 
+    let max_queue_per_user = ctx.data().db.max_queue_per_user(guild_id)?;
     let queued_by_user = player::user_queue_count(ctx.data(), guild_id, user_id).await;
-    let remaining_slots = player::MAX_QUEUED_TRACKS_PER_USER.saturating_sub(queued_by_user);
+    let remaining_slots = max_queue_per_user.saturating_sub(queued_by_user);
     if remaining_slots == 0 {
         ctx.say(format!(
             "Queue lu sudah mencapai batas `{}` lagu. Hapus beberapa dulu sebelum load playlist.",
-            player::MAX_QUEUED_TRACKS_PER_USER
+            max_queue_per_user
         ))
         .await?;
         return Ok(());
@@ -160,7 +190,9 @@ pub async fn list(ctx: Ctx<'_>) -> Result<(), Error> {
 #[poise::command(slash_command)]
 pub async fn delete(
     ctx: Ctx<'_>,
-    #[description = "Nama playlist"] name: String,
+    #[description = "Nama playlist"]
+    #[autocomplete = "autocomplete_playlist"]
+    name: String,
 ) -> Result<(), Error> {
     if !permissions::require_music_control(ctx).await? {
         return Ok(());

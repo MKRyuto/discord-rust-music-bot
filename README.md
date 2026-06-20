@@ -1,6 +1,6 @@
 # Discord Rust Music Bot
 
-> Version 1.4.0 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
+> Version 1.4.1 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
 
 Discord Rust Music Bot is a slash-command music bot with per-server queues, interactive embeds, button controls, and YouTube/search playback. It is designed as a clean Rust codebase for a practical Discord music bot, not a giant all-in-one framework.
 
@@ -23,7 +23,8 @@ Discord Rust Music Bot is a slash-command music bot with per-server queues, inte
 - Optional soft volume guard for loud tracks
 - DJ role permissions for playback controls
 - Vote skip for non-DJ listeners
-- Per-user play cooldown and queue limit
+- Configurable per-user play cooldown and queue limit
+- Configurable vote skip threshold and normalize cap
 - Discord bot presence showing `/help | /play`
 - Queue shuffle
 - Saved playlists backed by SQLite
@@ -170,11 +171,18 @@ winget upgrade Gyan.FFmpeg.Essentials
 | `/help` | Show bot command help. |
 | `/voteskip` | Vote to skip the current track. |
 | `/history limit:<number>` | Show the most played tracks in the current server. |
+| `/config show` | Show server music settings. |
+| `/config cooldown seconds:<number>` | Set per-user `/play` cooldown. |
+| `/config maxqueue limit:<number>` | Set max active queued tracks per user. |
+| `/config voteskip percent:<number>` | Set vote skip threshold. |
+| `/config normalize-cap percent:<number>` | Set effective volume cap when normalize is enabled. |
 | `/queue` | Show the queue panel. |
 | `/queue show` | Show the queue panel. |
 | `/queue clear` | Clear queued tracks. |
 | `/queue remove position:<number>` | Remove a queued track by queue number. |
 | `/queue remove-search query:<text>` | Remove the first queued track matching title or URL text. |
+| `/queue remove-range start:<number> end:<number>` | Remove several queued tracks at once. |
+| `/queue jump page:<number>` | Jump the queue panel to a page. |
 | `/queue move from:<number> to:<number>` | Move a queued track to another queue position. |
 | `/now` | Show the player panel. |
 | `/leave` | Stop playback and disconnect from voice. |
@@ -202,6 +210,7 @@ Player panel:
 - Loop mode
 - Volume down
 - Volume up
+- Volume presets: 50%, 100%, 150%
 - Shuffle queue
 - Normalize toggle
 - Autoplay toggle
@@ -222,7 +231,7 @@ When no DJ role is configured, everyone can use music controls. After one or mor
 
 Protected controls include play-now, stop, skip, leave, shuffle, volume, autoplay, normalize, queue clear/remove/move, playlist load/delete, and matching player/queue panel buttons. Normal `/play`, `/queue`, `/now`, `/history`, playlist save, and playlist list stay open.
 
-`/play` has a 10 second per-user cooldown and each user can keep up to 10 tracks in the active queue. `/voteskip` stays open to listeners in voice so regular members can skip with enough votes without getting full DJ control.
+`/play` has a configurable per-user cooldown and each user can keep a configurable number of tracks in the active queue. `/voteskip` stays open to listeners in voice so regular members can skip with enough votes without getting full DJ control.
 
 ## Project Structure
 

@@ -58,7 +58,11 @@ impl Database {
                 guild_id TEXT PRIMARY KEY,
                 volume_percent INTEGER NOT NULL DEFAULT 100,
                 autoplay_enabled INTEGER NOT NULL DEFAULT 0,
-                normalize_enabled INTEGER NOT NULL DEFAULT 0
+                normalize_enabled INTEGER NOT NULL DEFAULT 0,
+                play_cooldown_secs INTEGER NOT NULL DEFAULT 10,
+                max_queue_per_user INTEGER NOT NULL DEFAULT 10,
+                vote_skip_percent INTEGER NOT NULL DEFAULT 50,
+                normalize_cap_percent INTEGER NOT NULL DEFAULT 85
             );
 
             CREATE TABLE IF NOT EXISTS dj_roles (
@@ -130,6 +134,19 @@ impl Database {
         ) {
             if !err.to_string().contains("duplicate column name") {
                 return Err(err.into());
+            }
+        }
+
+        for statement in [
+            "ALTER TABLE guild_settings ADD COLUMN play_cooldown_secs INTEGER NOT NULL DEFAULT 10",
+            "ALTER TABLE guild_settings ADD COLUMN max_queue_per_user INTEGER NOT NULL DEFAULT 10",
+            "ALTER TABLE guild_settings ADD COLUMN vote_skip_percent INTEGER NOT NULL DEFAULT 50",
+            "ALTER TABLE guild_settings ADD COLUMN normalize_cap_percent INTEGER NOT NULL DEFAULT 85",
+        ] {
+            if let Err(err) = conn.execute(statement, []) {
+                if !err.to_string().contains("duplicate column name") {
+                    return Err(err.into());
+                }
             }
         }
 
@@ -291,6 +308,101 @@ impl Database {
         )?;
 
         Ok(changed > 0)
+    }
+
+    pub fn play_cooldown_secs(&self, guild_id: serenity::GuildId) -> Result<u64, Error> {
+        Ok(self
+            .guild_setting_i64(guild_id, "play_cooldown_secs", 10)?
+            .clamp(0, 300) as u64)
+    }
+
+    pub fn set_play_cooldown_secs(
+        &self,
+        guild_id: serenity::GuildId,
+        seconds: u64,
+    ) -> Result<(), Error> {
+        self.set_guild_setting_i64(guild_id, "play_cooldown_secs", seconds.min(300) as i64)
+    }
+
+    pub fn max_queue_per_user(&self, guild_id: serenity::GuildId) -> Result<usize, Error> {
+        Ok(self
+            .guild_setting_i64(guild_id, "max_queue_per_user", 10)?
+            .clamp(1, 100) as usize)
+    }
+
+    pub fn set_max_queue_per_user(
+        &self,
+        guild_id: serenity::GuildId,
+        limit: usize,
+    ) -> Result<(), Error> {
+        self.set_guild_setting_i64(guild_id, "max_queue_per_user", limit.clamp(1, 100) as i64)
+    }
+
+    pub fn vote_skip_percent(&self, guild_id: serenity::GuildId) -> Result<u8, Error> {
+        Ok(self
+            .guild_setting_i64(guild_id, "vote_skip_percent", 50)?
+            .clamp(1, 100) as u8)
+    }
+
+    pub fn set_vote_skip_percent(
+        &self,
+        guild_id: serenity::GuildId,
+        percent: u8,
+    ) -> Result<(), Error> {
+        self.set_guild_setting_i64(guild_id, "vote_skip_percent", percent.clamp(1, 100) as i64)
+    }
+
+    pub fn normalize_cap_percent(&self, guild_id: serenity::GuildId) -> Result<u8, Error> {
+        Ok(self
+            .guild_setting_i64(guild_id, "normalize_cap_percent", 85)?
+            .clamp(1, 200) as u8)
+    }
+
+    pub fn set_normalize_cap_percent(
+        &self,
+        guild_id: serenity::GuildId,
+        percent: u8,
+    ) -> Result<(), Error> {
+        self.set_guild_setting_i64(
+            guild_id,
+            "normalize_cap_percent",
+            percent.clamp(1, 200) as i64,
+        )
+    }
+
+    fn guild_setting_i64(
+        &self,
+        guild_id: serenity::GuildId,
+        column: &str,
+        default: i64,
+    ) -> Result<i64, Error> {
+        let conn = self.connect()?;
+        let query = format!("SELECT {column} FROM guild_settings WHERE guild_id = ?1");
+        Ok(conn
+            .query_row(&query, params![guild_id.get().to_string()], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()?
+            .unwrap_or(default))
+    }
+
+    fn set_guild_setting_i64(
+        &self,
+        guild_id: serenity::GuildId,
+        column: &str,
+        value: i64,
+    ) -> Result<(), Error> {
+        let conn = self.connect()?;
+        let query = format!(
+            "
+            INSERT INTO guild_settings (guild_id, {column})
+            VALUES (?1, ?2)
+            ON CONFLICT(guild_id) DO UPDATE SET {column} = excluded.{column}
+            "
+        );
+        conn.execute(&query, params![guild_id.get().to_string(), value])?;
+
+        Ok(())
     }
 
     pub fn record_history(&self, guild_id: serenity::GuildId, track: &Track) -> Result<(), Error> {
@@ -663,6 +775,42 @@ impl Database {
                 track_count: row.get::<_, i64>(1)?.max(0) as usize,
             })
         })?;
+
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn search_playlists(
+        &self,
+        guild_id: serenity::GuildId,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<PlaylistSummary>, Error> {
+        let conn = self.connect()?;
+        let pattern = format!("%{}%", query.trim());
+        let mut stmt = conn.prepare(
+            "
+            SELECT playlists.name, COUNT(playlist_tracks.position) AS track_count
+            FROM playlists
+            LEFT JOIN playlist_tracks
+                ON playlist_tracks.guild_id = playlists.guild_id
+                AND playlist_tracks.playlist_name = playlists.name
+            WHERE playlists.guild_id = ?1
+                AND (?2 = '%%' OR playlists.name LIKE ?2)
+            GROUP BY playlists.name
+            ORDER BY playlists.name ASC
+            LIMIT ?3
+            ",
+        )?;
+
+        let rows = stmt.query_map(
+            params![guild_id.get().to_string(), pattern, limit as i64],
+            |row| {
+                Ok(PlaylistSummary {
+                    name: row.get(0)?,
+                    track_count: row.get::<_, i64>(1)?.max(0) as usize,
+                })
+            },
+        )?;
 
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }

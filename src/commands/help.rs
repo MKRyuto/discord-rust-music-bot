@@ -15,12 +15,12 @@ pub async fn help(ctx: Ctx<'_>) -> Result<(), Error> {
         )
         .field(
             "Queue",
-            "`/queue show`, `/queue clear`, `/queue remove`, `/queue remove-search`, `/queue move`, `/shuffle`",
+            "`/queue show`, `/queue clear`, `/queue remove`, `/queue remove-search`, `/queue remove-range`, `/queue jump`, `/queue move`, `/shuffle`",
             false,
         )
         .field(
             "Settings",
-            "`/volume`, `/autoplay`, `/normalize`, `/djrole add`, `/djrole remove`, `/djrole list`",
+            "`/volume`, `/autoplay`, `/normalize`, `/config show`, `/config cooldown`, `/config maxqueue`, `/config voteskip`, `/config normalize-cap`, `/djrole add`, `/djrole remove`, `/djrole list`",
             false,
         )
         .field(
@@ -30,7 +30,7 @@ pub async fn help(ctx: Ctx<'_>) -> Result<(), Error> {
         )
         .field(
             "Rules",
-            "Control command bisa dibatasi pakai DJ role. `/play` punya cooldown 10 detik dan batas 10 lagu per user di queue.",
+            "Control command bisa dibatasi pakai DJ role. Cooldown, max queue, vote skip threshold, dan normalize cap bisa diatur pakai `/config`.",
             false,
         );
 

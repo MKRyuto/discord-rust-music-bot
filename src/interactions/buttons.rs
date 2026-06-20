@@ -108,6 +108,18 @@ pub async fn handle_event(
             component.defer(ctx).await?;
             player::adjust_volume(ctx, data, guild_id, 10).await?;
         }
+        player_panel::BTN_VOLUME_50 => {
+            component.defer(ctx).await?;
+            player::set_volume(ctx, data, guild_id, 50).await?;
+        }
+        player_panel::BTN_VOLUME_100 => {
+            component.defer(ctx).await?;
+            player::set_volume(ctx, data, guild_id, 100).await?;
+        }
+        player_panel::BTN_VOLUME_150 => {
+            component.defer(ctx).await?;
+            player::set_volume(ctx, data, guild_id, 150).await?;
+        }
         player_panel::BTN_SHUFFLE => {
             let total = player::shuffle_queue(data, guild_id).await;
             update_component_to_player(ctx, data, component, guild_id).await?;
@@ -210,6 +222,9 @@ fn requires_music_control(custom_id: &str) -> bool {
             | player_panel::BTN_LOOP
             | player_panel::BTN_VOLUME_DOWN
             | player_panel::BTN_VOLUME_UP
+            | player_panel::BTN_VOLUME_50
+            | player_panel::BTN_VOLUME_100
+            | player_panel::BTN_VOLUME_150
             | player_panel::BTN_SHUFFLE
             | player_panel::BTN_NORMALIZE
             | player_panel::BTN_AUTOPLAY

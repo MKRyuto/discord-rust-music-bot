@@ -75,11 +75,12 @@ pub async fn play(
         return Ok(());
     }
 
+    let max_queue_per_user = ctx.data().db.max_queue_per_user(guild_id)?;
     let queued_by_user = player::user_queue_count(ctx.data(), guild_id, user_id).await;
-    if queued_by_user >= player::MAX_QUEUED_TRACKS_PER_USER {
+    if queued_by_user >= max_queue_per_user {
         ctx.say(format!(
             "Queue lu sudah mencapai batas `{}` lagu. Tunggu lagu lu keputar atau hapus beberapa dulu.",
-            player::MAX_QUEUED_TRACKS_PER_USER
+            max_queue_per_user
         ))
         .await
         .ok();

@@ -8,7 +8,15 @@ use crate::{
 /// Tampilkan queue musik.
 #[poise::command(
     slash_command,
-    subcommands("show", "clear", "remove", "remove_search", "move_track")
+    subcommands(
+        "show",
+        "clear",
+        "remove",
+        "remove_search",
+        "remove_range",
+        "jump",
+        "move_track"
+    )
 )]
 pub async fn queue(ctx: Ctx<'_>) -> Result<(), Error> {
     show_queue_panel(ctx).await
@@ -132,6 +140,61 @@ pub async fn remove_search(
         None => {
             ctx.say(format!("Tidak nemu queue match buat `{query}`."))
                 .await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Hapus beberapa lagu dari queue berdasarkan range nomor.
+#[poise::command(slash_command, rename = "remove-range")]
+pub async fn remove_range(
+    ctx: Ctx<'_>,
+    #[description = "Nomor awal"] start: usize,
+    #[description = "Nomor akhir"] end: usize,
+) -> Result<(), Error> {
+    if !permissions::require_music_control(ctx).await? {
+        return Ok(());
+    }
+
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    let removed = player::remove_queued_track_range(ctx.data(), guild_id, start, end).await;
+
+    if removed.is_empty() {
+        ctx.say("Range queue tidak valid atau kosong.").await?;
+    } else {
+        queue_panel::update_queue_message(ctx.serenity_context(), ctx.data(), guild_id)
+            .await
+            .ok();
+        player_panel::update_player_message(ctx.serenity_context(), ctx.data(), guild_id)
+            .await
+            .ok();
+        ctx.say(format!("Removed `{}` queued track(s).", removed.len()))
+            .await?;
+    }
+
+    Ok(())
+}
+
+/// Lompat ke halaman queue tertentu.
+#[poise::command(slash_command)]
+pub async fn jump(ctx: Ctx<'_>, #[description = "Nomor halaman"] page: usize) -> Result<(), Error> {
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+
+    match player::set_queue_page(ctx.data(), guild_id, page).await {
+        Some((current, total)) => {
+            queue_panel::update_queue_message(ctx.serenity_context(), ctx.data(), guild_id)
+                .await
+                .ok();
+            ctx.say(format!("Queue page set to `{current}/{total}`."))
+                .await?;
+        }
+        None => {
+            ctx.say("Nomor halaman tidak valid.").await?;
         }
     }
 

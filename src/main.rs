@@ -44,6 +44,7 @@ async fn main() -> Result<(), Error> {
             commands::voteskip::voteskip(),
             commands::history::history(),
             commands::help::help(),
+            commands::config::config(),
             commands::queue::queue(),
             commands::now::now(),
             commands::leave::leave(),

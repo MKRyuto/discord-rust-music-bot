@@ -10,9 +10,6 @@ use crate::ui::player_panel;
 use crate::{Data, Error};
 
 const IDLE_DISCONNECT_AFTER: Duration = Duration::from_secs(60);
-const NORMALIZE_MAX_VOLUME_PERCENT: u8 = 85;
-const PLAY_COOLDOWN: Duration = Duration::from_secs(10);
-pub const MAX_QUEUED_TRACKS_PER_USER: usize = 10;
 
 fn is_http_url(input: &str) -> bool {
     url::Url::parse(input)
@@ -80,7 +77,7 @@ fn effective_volume_percent(
     volume_percent: u8,
 ) -> Result<u8, Error> {
     if data.db.normalize_enabled(guild_id)? {
-        Ok(volume_percent.min(NORMALIZE_MAX_VOLUME_PERCENT))
+        Ok(volume_percent.min(data.db.normalize_cap_percent(guild_id)?))
     } else {
         Ok(volume_percent)
     }
@@ -211,6 +208,57 @@ pub async fn remove_queued_track_matching(
     removed
 }
 
+pub async fn remove_queued_track_range(
+    data: &Data,
+    guild_id: serenity::GuildId,
+    start_position: usize,
+    end_position: usize,
+) -> Vec<Track> {
+    if start_position == 0 || end_position < start_position {
+        return Vec::new();
+    }
+
+    let removed = {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        let len = state.queue.len();
+        if start_position > len {
+            return Vec::new();
+        }
+
+        let start = start_position - 1;
+        let end = end_position.min(len);
+        let removed = state.queue.drain(start..end).collect::<Vec<_>>();
+        if !removed.is_empty() {
+            state.queue_page = 0;
+        }
+        removed
+    };
+
+    if !removed.is_empty() {
+        persist_queue(data, guild_id).await;
+    }
+
+    removed
+}
+
+pub async fn set_queue_page(
+    data: &Data,
+    guild_id: serenity::GuildId,
+    page_number: usize,
+) -> Option<(usize, usize)> {
+    if page_number == 0 {
+        return None;
+    }
+
+    let state_lock = data.music.get(guild_id).await;
+    let mut state = state_lock.lock().await;
+    let total_pages = state.queue.len().div_ceil(10).max(1);
+    let page_index = page_number.min(total_pages) - 1;
+    state.queue_page = page_index;
+    Some((page_index + 1, total_pages))
+}
+
 pub async fn move_queued_track(
     data: &Data,
     guild_id: serenity::GuildId,
@@ -250,18 +298,28 @@ pub async fn play_cooldown_remaining(
     guild_id: serenity::GuildId,
     user_id: serenity::UserId,
 ) -> Option<u64> {
+    let cooldown = data
+        .db
+        .play_cooldown_secs(guild_id)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|_| Duration::from_secs(10));
+
+    if cooldown.is_zero() {
+        return None;
+    }
+
     let state_lock = data.music.get(guild_id).await;
     let mut state = state_lock.lock().await;
     let now = Instant::now();
 
     state
         .recent_play_requests
-        .retain(|_, last| now.duration_since(*last) < PLAY_COOLDOWN);
+        .retain(|_, last| now.duration_since(*last) < cooldown);
 
     if let Some(last) = state.recent_play_requests.get(&user_id) {
         let elapsed = now.duration_since(*last);
-        if elapsed < PLAY_COOLDOWN {
-            return Some((PLAY_COOLDOWN - elapsed).as_secs().max(1));
+        if elapsed < cooldown {
+            return Some((cooldown - elapsed).as_secs().max(1));
         }
     }
 
@@ -299,7 +357,7 @@ pub async fn vote_skip(
         return Err("Lu harus join voice channel dulu buat vote skip.".into());
     }
 
-    let needed = vote_skip_threshold(ctx, guild_id, user_id);
+    let needed = vote_skip_threshold(ctx, data, guild_id, user_id);
     let votes = {
         let state_lock = data.music.get(guild_id).await;
         let mut state = state_lock.lock().await;
@@ -323,6 +381,7 @@ pub async fn vote_skip(
 
 fn vote_skip_threshold(
     ctx: &serenity::Context,
+    data: &Data,
     guild_id: serenity::GuildId,
     user_id: serenity::UserId,
 ) -> usize {
@@ -342,7 +401,8 @@ fn vote_skip_threshold(
     if listeners <= 2 {
         1
     } else {
-        listeners.div_ceil(2)
+        let percent = data.db.vote_skip_percent(guild_id).unwrap_or(50) as usize;
+        ((listeners * percent).div_ceil(100)).max(1)
     }
 }
 

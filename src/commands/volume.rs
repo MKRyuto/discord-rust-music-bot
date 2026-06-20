@@ -16,9 +16,10 @@ pub async fn volume(
     let percent = percent.min(200);
 
     player::set_volume(ctx.serenity_context(), ctx.data(), guild_id, percent).await?;
-    if ctx.data().db.normalize_enabled(guild_id)? && percent > 85 {
+    let normalize_cap = ctx.data().db.normalize_cap_percent(guild_id)?;
+    if ctx.data().db.normalize_enabled(guild_id)? && percent > normalize_cap {
         ctx.say(format!(
-            "Volume set to `{percent}%`, tapi normalize sedang ON jadi output efektif dicap `85%`."
+            "Volume set to `{percent}%`, tapi normalize sedang ON jadi output efektif dicap `{normalize_cap}%`."
         ))
         .await?;
     } else {

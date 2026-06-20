@@ -18,19 +18,27 @@ pub const BTN_PLAYLISTS: &str = "music:playlists";
 pub const BTN_VOTE_SKIP: &str = "music:vote_skip";
 pub const BTN_NORMALIZE: &str = "music:normalize";
 pub const BTN_AUTOPLAY: &str = "music:autoplay";
+pub const BTN_VOLUME_50: &str = "music:volume_50";
+pub const BTN_VOLUME_100: &str = "music:volume_100";
+pub const BTN_VOLUME_150: &str = "music:volume_150";
 
 pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> CreateEmbed {
     let state_lock = data.music.get(guild_id).await;
     let state = state_lock.lock().await;
     let autoplay = data.db.autoplay_enabled(guild_id).unwrap_or(false);
     let normalize = data.db.normalize_enabled(guild_id).unwrap_or(false);
+    let normalize_cap = data.db.normalize_cap_percent(guild_id).unwrap_or(85);
 
     let mut embed = CreateEmbed::new();
 
     if let Some(track) = &state.now_playing {
         let status = if state.is_paused { "Paused" } else { "Playing" };
 
-        let normalize_label = if normalize { "On (cap 85%)" } else { "Off" };
+        let normalize_label = if normalize {
+            format!("On (cap {normalize_cap}%)")
+        } else {
+            "Off".to_string()
+        };
 
         embed = embed.title("Music Player").description(format!(
             "{status}\n\n**{}**\nDuration: `{}`\nRequested by: <@{}>\n\nQueue: `{}` track(s)\nVote skip: `{}` vote(s)\nLoop: `{}`\nVolume: `{}%`\nAutoplay: `{}`\nNormalize: `{}`",
@@ -59,6 +67,7 @@ pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> Cre
 
 pub fn build_player_buttons(
     is_paused: bool,
+    has_track: bool,
     loop_label: &str,
     normalize_enabled: bool,
     autoplay_enabled: bool,
@@ -79,16 +88,20 @@ pub fn build_player_buttons(
         CreateActionRow::Buttons(vec![
             CreateButton::new(BTN_PAUSE_RESUME)
                 .label(pause_label)
-                .style(ButtonStyle::Primary),
+                .style(ButtonStyle::Primary)
+                .disabled(!has_track),
             CreateButton::new(BTN_SKIP)
                 .label("Skip")
-                .style(ButtonStyle::Secondary),
+                .style(ButtonStyle::Secondary)
+                .disabled(!has_track),
             CreateButton::new(BTN_VOTE_SKIP)
                 .label("Vote Skip")
-                .style(ButtonStyle::Secondary),
+                .style(ButtonStyle::Secondary)
+                .disabled(!has_track),
             CreateButton::new(BTN_STOP)
                 .label("Stop")
-                .style(ButtonStyle::Danger),
+                .style(ButtonStyle::Danger)
+                .disabled(!has_track),
         ]),
         CreateActionRow::Buttons(vec![
             CreateButton::new(BTN_QUEUE)
@@ -118,9 +131,20 @@ pub fn build_player_buttons(
                 .label("Playlists")
                 .style(ButtonStyle::Secondary),
         ]),
-        CreateActionRow::Buttons(vec![CreateButton::new(BTN_AUTOPLAY)
-            .label(autoplay_label)
-            .style(ButtonStyle::Secondary)]),
+        CreateActionRow::Buttons(vec![
+            CreateButton::new(BTN_VOLUME_50)
+                .label("50%")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_VOLUME_100)
+                .label("100%")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_VOLUME_150)
+                .label("150%")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(BTN_AUTOPLAY)
+                .label(autoplay_label)
+                .style(ButtonStyle::Secondary),
+        ]),
     ]
 }
 
@@ -134,6 +158,7 @@ pub async fn build_player_components(
     let autoplay_enabled = data.db.autoplay_enabled(guild_id).unwrap_or(false);
     build_player_buttons(
         state.is_paused,
+        state.now_playing.is_some(),
         state.loop_mode.label(),
         normalize_enabled,
         autoplay_enabled,
