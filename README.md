@@ -1,6 +1,6 @@
 # Discord Rust Music Bot
 
-> Version 1.4.5 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
+> Version 1.4.6 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
 
 Discord Rust Music Bot is a slash-command music bot with per-server queues, interactive embeds, button controls, and YouTube/search playback. It is designed as a clean Rust codebase for a practical Discord music bot, not a giant all-in-one framework.
 
@@ -35,6 +35,8 @@ Discord Rust Music Bot is a slash-command music bot with per-server queues, inte
 - Seek command
 - Volume select menu and playlist load mode selector
 - Cleaner player control surface without stale volume preset buttons
+- Interactive category-based help menu
+- Import YouTube playlists into saved playlists
 - Discord bot presence showing `/help | /play`
 - Queue shuffle
 - Saved playlists backed by SQLite
@@ -221,6 +223,7 @@ winget upgrade Gyan.FFmpeg.Essentials
 | `/shuffle` | Shuffle the queued tracks. |
 | `/playlist save name:<text>` | Save now playing and the queue as a playlist. |
 | `/playlist append name:<text>` | Append now playing and the queue to a saved playlist. |
+| `/playlist import-youtube name:<text> url:<url> append:<bool>` | Import up to 100 tracks from a YouTube playlist. |
 | `/playlist load name:<text> mode:<append/replace/playnow>` | Load a saved playlist into the queue. |
 | `/playlist rename old_name:<text> new_name:<text>` | Rename a saved playlist. |
 | `/playlist list` | Show saved playlists for the current server. |
@@ -263,7 +266,7 @@ Queue panel:
 
 When no DJ role is configured, everyone can use music controls. After one or more DJ roles are added with `/djrole add`, playback controls are limited to server administrators, users with `Manage Server`, and members with one of the configured DJ roles.
 
-Protected controls include play-now, stop, skip, leave, shuffle, volume, autoplay, normalize, queue clear/remove/move, playlist load/delete, and matching player/queue panel buttons. Normal `/play`, `/queue`, `/now`, `/history`, playlist save, and playlist list stay open.
+Protected controls include play-now, stop, skip, leave, shuffle, volume, autoplay, normalize, queue clear/remove/move, playlist load/import/delete, and matching player/queue panel buttons. Normal `/play`, `/queue`, `/now`, `/history`, playlist save, and playlist list stay open.
 
 `/play` has a configurable per-user cooldown and each user can keep a configurable number of tracks in the active queue. `/voteskip` stays open to listeners in voice so regular members can skip with enough votes without getting full DJ control.
 

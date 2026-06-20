@@ -1,4 +1,6 @@
 use poise::serenity_prelude as serenity;
+use serde_json::Value;
+use std::{process::Command, time::Duration};
 
 use crate::{
     music::{player, track::Track},
@@ -10,7 +12,7 @@ use crate::{
 /// Kelola saved playlist server ini.
 #[poise::command(
     slash_command,
-    subcommands("save", "append", "load", "list", "rename", "delete"),
+    subcommands("save", "append", "load", "import_youtube", "list", "rename", "delete"),
     subcommand_required
 )]
 pub async fn playlist(_ctx: Ctx<'_>) -> Result<(), Error> {
@@ -187,6 +189,61 @@ pub async fn load(
     Ok(())
 }
 
+/// Import playlist YouTube menjadi saved playlist.
+#[poise::command(slash_command, rename = "import-youtube")]
+pub async fn import_youtube(
+    ctx: Ctx<'_>,
+    #[description = "Nama saved playlist"] name: String,
+    #[description = "URL playlist YouTube"] url: String,
+    #[description = "Tambahkan ke playlist jika sudah ada"] append: Option<bool>,
+) -> Result<(), Error> {
+    if !permissions::require_music_control(ctx).await? {
+        return Ok(());
+    }
+
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("Command ini cuma bisa dipakai di server.")?;
+    let name = normalize_name(&name)?;
+    validate_youtube_playlist_url(&url)?;
+    ctx.defer_ephemeral().await?;
+
+    let requested_by = ctx.author().id;
+    let import_url = url.clone();
+    let tracks = tokio::time::timeout(
+        Duration::from_secs(45),
+        tokio::task::spawn_blocking(move || import_youtube_tracks(&import_url, requested_by)),
+    )
+    .await
+    .map_err(|_| "Import playlist timeout setelah 45 detik.")??;
+    let tracks = tracks?;
+
+    if tracks.is_empty() {
+        ctx.say("Tidak ada video yang bisa diimport dari playlist itu.")
+            .await?;
+        return Ok(());
+    }
+
+    let imported = tracks.len();
+    let total = if append.unwrap_or(false) {
+        ctx.data()
+            .db
+            .append_playlist(guild_id, &name, requested_by, &tracks)?
+    } else {
+        ctx.data()
+            .db
+            .save_playlist(guild_id, &name, requested_by, &tracks)?;
+        imported
+    };
+
+    ctx.say(format!(
+        "Imported `{imported}` track(s) dari YouTube ke playlist `{name}`. Total sekarang: `{total}` track(s)."
+    ))
+    .await?;
+
+    Ok(())
+}
+
 /// Lihat semua saved playlist.
 #[poise::command(slash_command)]
 pub async fn list(ctx: Ctx<'_>) -> Result<(), Error> {
@@ -300,6 +357,86 @@ fn normalize_name(name: &str) -> Result<String, Error> {
     }
 
     Ok(name.to_string())
+}
+
+fn validate_youtube_playlist_url(raw: &str) -> Result<(), Error> {
+    let parsed = url::Url::parse(raw.trim()).map_err(|_| "URL playlist tidak valid.")?;
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    let is_youtube = matches!(
+        host.as_str(),
+        "youtube.com" | "www.youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtu.be"
+    );
+    let has_playlist_id = parsed
+        .query_pairs()
+        .any(|(key, value)| key == "list" && !value.is_empty());
+
+    if !is_youtube || !has_playlist_id {
+        return Err("Masukkan URL playlist YouTube yang punya parameter `list=`.".into());
+    }
+
+    Ok(())
+}
+
+fn import_youtube_tracks(url: &str, requested_by: serenity::UserId) -> Result<Vec<Track>, Error> {
+    let output = Command::new("yt-dlp")
+        .args([
+            "--flat-playlist",
+            "--playlist-end",
+            "100",
+            "--dump-json",
+            "--skip-download",
+            "--no-warnings",
+            url,
+        ])
+        .output()
+        .map_err(|err| format!("Gagal menjalankan yt-dlp: {err}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("yt-dlp gagal import playlist: {}", stderr.trim()).into());
+    }
+
+    let tracks = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|item| youtube_item_to_track(&item, requested_by))
+        .collect::<Vec<_>>();
+
+    Ok(tracks)
+}
+
+fn youtube_item_to_track(item: &Value, requested_by: serenity::UserId) -> Option<Track> {
+    let id = item.get("id")?.as_str()?.trim();
+    if id.is_empty() {
+        return None;
+    }
+
+    let title = item
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or(id)
+        .to_string();
+    let webpage_url = item
+        .get("webpage_url")
+        .and_then(Value::as_str)
+        .filter(|url| url.starts_with("http"))
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={id}"));
+
+    Some(Track {
+        title,
+        url: webpage_url,
+        duration_secs: item
+            .get("duration")
+            .and_then(Value::as_f64)
+            .map(|value| value.round() as u64),
+        requested_by,
+        thumbnail: item
+            .get("thumbnail")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -8,7 +8,7 @@ use crate::{
     music::player,
     music::state::{LoopMode, PlaylistLoadMode},
     permissions,
-    ui::{player_panel, queue_panel},
+    ui::{help_panel, player_panel, queue_panel},
     Data, Error,
 };
 
@@ -28,6 +28,25 @@ pub async fn handle_event(
     let custom_id = component.data.custom_id.as_str();
 
     if !custom_id.starts_with("music:") {
+        return Ok(());
+    }
+
+    if custom_id == help_panel::SELECT_CATEGORY {
+        let ComponentInteractionDataKind::StringSelect { values } = &component.data.kind else {
+            return Ok(());
+        };
+        let category = values.first().map(String::as_str).unwrap_or("overview");
+
+        component
+            .create_response(
+                ctx,
+                CreateInteractionResponse::UpdateMessage(
+                    CreateInteractionResponseMessage::new()
+                        .embed(help_panel::category_embed(category))
+                        .components(help_panel::category_select(Some(category))),
+                ),
+            )
+            .await?;
         return Ok(());
     }
 
