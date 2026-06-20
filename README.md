@@ -1,6 +1,6 @@
 # Discord Rust Music Bot
 
-> Version 1.4.4 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
+> Version 1.4.5 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
 
 Discord Rust Music Bot is a slash-command music bot with per-server queues, interactive embeds, button controls, and YouTube/search playback. It is designed as a clean Rust codebase for a practical Discord music bot, not a giant all-in-one framework.
 
@@ -34,6 +34,7 @@ Discord Rust Music Bot is a slash-command music bot with per-server queues, inte
 - Playlist append, rename, and load modes
 - Seek command
 - Volume select menu and playlist load mode selector
+- Cleaner player control surface without stale volume preset buttons
 - Discord bot presence showing `/help | /play`
 - Queue shuffle
 - Saved playlists backed by SQLite
@@ -220,7 +221,7 @@ winget upgrade Gyan.FFmpeg.Essentials
 | `/shuffle` | Shuffle the queued tracks. |
 | `/playlist save name:<text>` | Save now playing and the queue as a playlist. |
 | `/playlist append name:<text>` | Append now playing and the queue to a saved playlist. |
-| `/playlist load name:<text> mode:<append|replace|playnow>` | Load a saved playlist into the queue. |
+| `/playlist load name:<text> mode:<append/replace/playnow>` | Load a saved playlist into the queue. |
 | `/playlist rename old_name:<text> new_name:<text>` | Rename a saved playlist. |
 | `/playlist list` | Show saved playlists for the current server. |
 | `/playlist delete name:<text>` | Delete a saved playlist. |
