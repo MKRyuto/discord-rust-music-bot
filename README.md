@@ -1,6 +1,6 @@
 # Discord Rust Music Bot
 
-> Version 1.4.2 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
+> Version 1.4.3 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
 
 Discord Rust Music Bot is a slash-command music bot with per-server queues, interactive embeds, button controls, and YouTube/search playback. It is designed as a clean Rust codebase for a practical Discord music bot, not a giant all-in-one framework.
 
@@ -18,7 +18,9 @@ Discord Rust Music Bot is a slash-command music bot with per-server queues, inte
 - Play-now command for immediate playback
 - Player panel with pause, resume, skip, stop, loop, queue, volume, shuffle, playlists, and refresh
 - Player panel vote-skip and normalize toggles
+- Player panel loop and playlist select menus
 - Queue panel with paginated navigation
+- Queue panel page jump, remove range, and clear confirmation
 - Volume control with persisted guild settings
 - Optional soft volume guard for loud tracks
 - DJ role permissions for playback controls
@@ -225,14 +227,14 @@ Player panel:
 - Vote Skip
 - Stop
 - Queue
-- Loop mode
+- Loop mode select menu
 - Volume down
 - Volume up
-- Volume presets: 50%, 100%, 150%
+- Volume presets
 - Shuffle queue
 - Normalize toggle
 - Autoplay toggle
-- Show saved playlists
+- Playlist load select menu
 - Refresh
 
 Queue panel:
@@ -240,6 +242,9 @@ Queue panel:
 - Prev Page
 - Next Page
 - Clear
+- Clear confirmation
+- Page jump select menu
+- Remove range select menu
 - Player
 - Remove track select menu
 

@@ -9,8 +9,12 @@ use crate::{Data, Error};
 pub const BTN_PREV: &str = "music:queue_prev";
 pub const BTN_NEXT: &str = "music:queue_next";
 pub const BTN_CLEAR: &str = "music:queue_clear";
+pub const BTN_CLEAR_CONFIRM: &str = "music:queue_clear_confirm";
+pub const BTN_CLEAR_CANCEL: &str = "music:queue_clear_cancel";
 pub const BTN_PLAYER: &str = "music:player";
 pub const SELECT_REMOVE: &str = "music:queue_remove_select";
+pub const SELECT_PAGE: &str = "music:queue_page_select";
+pub const SELECT_REMOVE_RANGE: &str = "music:queue_remove_range_select";
 
 const PAGE_SIZE: usize = 10;
 
@@ -80,11 +84,34 @@ pub async fn build_queue_buttons(data: &Data, guild_id: serenity::GuildId) -> Ve
             .disabled(page + 1 >= total_pages),
         CreateButton::new(BTN_CLEAR)
             .label("Clear")
-            .style(ButtonStyle::Danger),
+            .style(ButtonStyle::Danger)
+            .disabled(state.queue.is_empty()),
         CreateButton::new(BTN_PLAYER)
             .label("Player")
             .style(ButtonStyle::Primary),
     ])];
+
+    if total_pages > 1 {
+        let page_options = (0..total_pages.min(25))
+            .map(|idx| {
+                CreateSelectMenuOption::new(format!("Page {}", idx + 1), (idx + 1).to_string())
+                    .description(format!("Jump to queue page {}", idx + 1))
+                    .default_selection(idx == page)
+            })
+            .collect::<Vec<_>>();
+
+        rows.push(CreateActionRow::SelectMenu(
+            CreateSelectMenu::new(
+                SELECT_PAGE,
+                CreateSelectMenuKind::String {
+                    options: page_options,
+                },
+            )
+            .placeholder("Jump to page")
+            .min_values(1)
+            .max_values(1),
+        ));
+    }
 
     let start = page * PAGE_SIZE;
     let options = state
@@ -114,9 +141,57 @@ pub async fn build_queue_buttons(data: &Data, guild_id: serenity::GuildId) -> Ve
                 .min_values(1)
                 .max_values(1),
         ));
+
+        rows.push(CreateActionRow::SelectMenu(
+            CreateSelectMenu::new(
+                SELECT_REMOVE_RANGE,
+                CreateSelectMenuKind::String {
+                    options: remove_range_options(start, state.queue.len()),
+                },
+            )
+            .placeholder("Remove a range")
+            .min_values(1)
+            .max_values(1),
+        ));
     }
 
     rows
+}
+
+pub fn clear_confirm_buttons() -> Vec<CreateActionRow> {
+    vec![CreateActionRow::Buttons(vec![
+        CreateButton::new(BTN_CLEAR_CONFIRM)
+            .label("Confirm Clear")
+            .style(ButtonStyle::Danger),
+        CreateButton::new(BTN_CLEAR_CANCEL)
+            .label("Cancel")
+            .style(ButtonStyle::Secondary),
+    ])]
+}
+
+fn remove_range_options(start: usize, total: usize) -> Vec<CreateSelectMenuOption> {
+    let visible_start = start + 1;
+    let visible_end = (start + PAGE_SIZE).min(total);
+    let mut options = vec![CreateSelectMenuOption::new(
+        format!("Visible page ({visible_start}-{visible_end})"),
+        format!("{visible_start}:{visible_end}"),
+    )
+    .description("Remove every track visible on this page")];
+
+    let mut range_start = visible_start;
+    while range_start <= visible_end && options.len() < 25 {
+        let range_end = (range_start + 4).min(visible_end);
+        options.push(
+            CreateSelectMenuOption::new(
+                format!("{range_start}-{range_end}"),
+                format!("{range_start}:{range_end}"),
+            )
+            .description("Remove this range"),
+        );
+        range_start = range_end + 1;
+    }
+
+    options
 }
 
 fn truncate_option(value: &str, max_chars: usize) -> String {

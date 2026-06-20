@@ -1,9 +1,10 @@
 use poise::serenity_prelude as serenity;
 use serenity::{
-    ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, CreateMessage, EditMessage,
+    ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, CreateMessage, CreateSelectMenu,
+    CreateSelectMenuKind, CreateSelectMenuOption, EditMessage,
 };
 
-use crate::{Data, Error};
+use crate::{music::state::LoopMode, Data, Error};
 
 pub const BTN_PAUSE_RESUME: &str = "music:pause_resume";
 pub const BTN_SKIP: &str = "music:skip";
@@ -23,6 +24,8 @@ pub const BTN_AUTOPLAY: &str = "music:autoplay";
 pub const BTN_VOLUME_50: &str = "music:volume_50";
 pub const BTN_VOLUME_100: &str = "music:volume_100";
 pub const BTN_VOLUME_150: &str = "music:volume_150";
+pub const SELECT_LOOP_MODE: &str = "music:loop_select";
+pub const SELECT_PLAYLIST_LOAD: &str = "music:playlist_load_select";
 
 pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> CreateEmbed {
     let state_lock = data.music.get(guild_id).await;
@@ -70,9 +73,12 @@ pub async fn build_player_embed(data: &Data, guild_id: serenity::GuildId) -> Cre
 pub fn build_player_buttons(
     is_paused: bool,
     has_track: bool,
-    loop_label: &str,
+    has_previous: bool,
+    has_queue: bool,
+    loop_mode: LoopMode,
     normalize_enabled: bool,
     autoplay_enabled: bool,
+    playlists: Vec<crate::storage::PlaylistSummary>,
 ) -> Vec<CreateActionRow> {
     let pause_label = if is_paused { "Resume" } else { "Pause" };
     let normalize_label = if normalize_enabled {
@@ -98,63 +104,68 @@ pub fn build_player_buttons(
                 .disabled(!has_track),
             CreateButton::new(BTN_PREVIOUS)
                 .label("Previous")
-                .style(ButtonStyle::Secondary),
+                .style(ButtonStyle::Secondary)
+                .disabled(!has_previous),
             CreateButton::new(BTN_REPLAY)
                 .label("Replay")
                 .style(ButtonStyle::Secondary)
                 .disabled(!has_track),
+            CreateButton::new(BTN_STOP)
+                .label("Stop")
+                .style(ButtonStyle::Danger)
+                .disabled(!has_track),
+        ]),
+        CreateActionRow::Buttons(vec![
+            CreateButton::new(BTN_QUEUE)
+                .label("Queue")
+                .style(ButtonStyle::Secondary)
+                .disabled(!has_track && !has_queue),
             CreateButton::new(BTN_VOTE_SKIP)
                 .label("Vote Skip")
                 .style(ButtonStyle::Secondary)
                 .disabled(!has_track),
-        ]),
-        CreateActionRow::Buttons(vec![CreateButton::new(BTN_STOP)
-            .label("Stop")
-            .style(ButtonStyle::Danger)
-            .disabled(!has_track)]),
-        CreateActionRow::Buttons(vec![
-            CreateButton::new(BTN_QUEUE)
-                .label("Queue")
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(BTN_LOOP)
-                .label(format!("Loop: {loop_label}"))
-                .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_REFRESH)
                 .label("Refresh")
                 .style(ButtonStyle::Secondary),
-        ]),
-        CreateActionRow::Buttons(vec![
             CreateButton::new(BTN_VOLUME_DOWN)
                 .label("Vol -")
                 .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_VOLUME_UP)
                 .label("Vol +")
                 .style(ButtonStyle::Secondary),
+        ]),
+        CreateActionRow::Buttons(vec![
             CreateButton::new(BTN_SHUFFLE)
                 .label("Shuffle")
                 .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_NORMALIZE)
                 .label(normalize_label)
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(BTN_PLAYLISTS)
-                .label("Playlists")
+            CreateButton::new(BTN_AUTOPLAY)
+                .label(autoplay_label)
                 .style(ButtonStyle::Secondary),
-        ]),
-        CreateActionRow::Buttons(vec![
             CreateButton::new(BTN_VOLUME_50)
                 .label("50%")
                 .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_VOLUME_100)
                 .label("100%")
                 .style(ButtonStyle::Secondary),
-            CreateButton::new(BTN_VOLUME_150)
-                .label("150%")
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(BTN_AUTOPLAY)
-                .label(autoplay_label)
-                .style(ButtonStyle::Secondary),
         ]),
+        CreateActionRow::SelectMenu(
+            CreateSelectMenu::new(
+                SELECT_LOOP_MODE,
+                CreateSelectMenuKind::String {
+                    options: loop_options(loop_mode),
+                },
+            )
+            .placeholder("Loop mode")
+            .min_values(1)
+            .max_values(1),
+        ),
     ]
+    .into_iter()
+    .chain(playlist_select_row(playlists))
+    .collect()
 }
 
 pub async fn build_player_components(
@@ -165,13 +176,73 @@ pub async fn build_player_components(
     let state = state_lock.lock().await;
     let normalize_enabled = data.db.normalize_enabled(guild_id).unwrap_or(false);
     let autoplay_enabled = data.db.autoplay_enabled(guild_id).unwrap_or(false);
+    let playlists = data.db.list_playlists(guild_id).unwrap_or_default();
     build_player_buttons(
         state.is_paused,
         state.now_playing.is_some(),
-        state.loop_mode.label(),
+        !state.previous_tracks.is_empty(),
+        !state.queue.is_empty(),
+        state.loop_mode,
         normalize_enabled,
         autoplay_enabled,
+        playlists,
     )
+}
+
+fn loop_options(current: LoopMode) -> Vec<CreateSelectMenuOption> {
+    [
+        (LoopMode::Off, "Off", "No looping"),
+        (LoopMode::One, "One", "Repeat current track"),
+        (LoopMode::Queue, "Queue", "Repeat the queue"),
+    ]
+    .into_iter()
+    .map(|(mode, label, description)| {
+        CreateSelectMenuOption::new(label, label.to_lowercase())
+            .description(description)
+            .default_selection(mode == current)
+    })
+    .collect()
+}
+
+fn playlist_select_row(playlists: Vec<crate::storage::PlaylistSummary>) -> Option<CreateActionRow> {
+    let options = playlists
+        .into_iter()
+        .take(25)
+        .map(|playlist| {
+            CreateSelectMenuOption::new(
+                truncate_option(&playlist.name, 90),
+                truncate_option(&playlist.name, 100),
+            )
+            .description(format!("{} track(s)", playlist.track_count))
+        })
+        .collect::<Vec<_>>();
+
+    if options.is_empty() {
+        return None;
+    }
+
+    Some(CreateActionRow::SelectMenu(
+        CreateSelectMenu::new(
+            SELECT_PLAYLIST_LOAD,
+            CreateSelectMenuKind::String { options },
+        )
+        .placeholder("Load playlist")
+        .min_values(1)
+        .max_values(1),
+    ))
+}
+
+fn truncate_option(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+
+    let mut output = value
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    output.push_str("...");
+    output
 }
 
 pub async fn send_or_update_player_panel(

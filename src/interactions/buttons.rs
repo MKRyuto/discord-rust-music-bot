@@ -6,6 +6,7 @@ use serenity::{
 
 use crate::{
     music::player,
+    music::state::LoopMode,
     permissions,
     ui::{player_panel, queue_panel},
     Data, Error,
@@ -62,42 +63,39 @@ pub async fn handle_event(
             player::skip(ctx, data, guild_id).await?;
         }
         player_panel::BTN_PREVIOUS => {
-            component.defer(ctx).await?;
-            if let Err(err) = player::previous(ctx, data, guild_id).await {
-                component.channel_id.say(ctx, err.to_string()).await.ok();
-            }
+            respond_ephemeral(
+                ctx,
+                component,
+                match player::previous(ctx, data, guild_id).await {
+                    Ok(()) => "Playing previous track.".to_string(),
+                    Err(err) => err.to_string(),
+                },
+            )
+            .await?;
         }
         player_panel::BTN_REPLAY => {
-            component.defer(ctx).await?;
-            if let Err(err) = player::replay(ctx, data, guild_id).await {
-                component.channel_id.say(ctx, err.to_string()).await.ok();
-            }
+            respond_ephemeral(
+                ctx,
+                component,
+                match player::replay(ctx, data, guild_id).await {
+                    Ok(()) => "Replaying current track.".to_string(),
+                    Err(err) => err.to_string(),
+                },
+            )
+            .await?;
         }
         player_panel::BTN_VOTE_SKIP => {
-            component.defer(ctx).await?;
-            match player::vote_skip(ctx, data, guild_id, component.user.id).await {
+            let message = match player::vote_skip(ctx, data, guild_id, component.user.id).await {
                 Ok((votes, needed, skipped)) => {
                     if skipped {
-                        component
-                            .channel_id
-                            .say(
-                                ctx,
-                                format!("Vote skip lolos `{votes}/{needed}`. Skipping."),
-                            )
-                            .await
-                            .ok();
+                        format!("Vote skip lolos `{votes}/{needed}`. Skipping.")
                     } else {
-                        component
-                            .channel_id
-                            .say(ctx, format!("Vote skip: `{votes}/{needed}` vote(s)."))
-                            .await
-                            .ok();
+                        format!("Vote skip: `{votes}/{needed}` vote(s).")
                     }
                 }
-                Err(err) => {
-                    component.channel_id.say(ctx, err.to_string()).await.ok();
-                }
-            }
+                Err(err) => err.to_string(),
+            };
+            respond_ephemeral(ctx, component, message).await?;
         }
         player_panel::BTN_STOP => {
             component.defer(ctx).await?;
@@ -108,6 +106,23 @@ pub async fn handle_event(
                 let state_lock = data.music.get(guild_id).await;
                 let mut state = state_lock.lock().await;
                 state.loop_mode = state.loop_mode.next();
+            }
+
+            update_component_to_player(ctx, data, component, guild_id).await?;
+        }
+        player_panel::SELECT_LOOP_MODE => {
+            let ComponentInteractionDataKind::StringSelect { values } = &component.data.kind else {
+                return Ok(());
+            };
+
+            let Some(mode) = values.first().and_then(|value| loop_mode_from_value(value)) else {
+                return Ok(());
+            };
+
+            {
+                let state_lock = data.music.get(guild_id).await;
+                let mut state = state_lock.lock().await;
+                state.loop_mode = mode;
             }
 
             update_component_to_player(ctx, data, component, guild_id).await?;
@@ -156,6 +171,18 @@ pub async fn handle_event(
         player_panel::BTN_PLAYLISTS => {
             show_playlists(ctx, data, component, guild_id).await?;
         }
+        player_panel::SELECT_PLAYLIST_LOAD => {
+            let ComponentInteractionDataKind::StringSelect { values } = &component.data.kind else {
+                return Ok(());
+            };
+
+            let Some(name) = values.first() else {
+                return Ok(());
+            };
+
+            let message = load_playlist_from_select(ctx, data, guild_id, component, name).await;
+            respond_ephemeral(ctx, component, message).await?;
+        }
         player_panel::BTN_REFRESH | queue_panel::BTN_PLAYER => {
             update_component_to_player(ctx, data, component, guild_id).await?;
         }
@@ -182,18 +209,54 @@ pub async fn handle_event(
             update_component_to_queue(ctx, data, component, guild_id).await?;
         }
         queue_panel::BTN_CLEAR => {
-            {
-                let state_lock = data.music.get(guild_id).await;
-                let mut state = state_lock.lock().await;
-                state.queue.clear();
-                state.queue_page = 0;
-            }
+            component
+                .create_response(
+                    ctx,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("Clear all queued tracks?")
+                            .components(queue_panel::clear_confirm_buttons())
+                            .ephemeral(true),
+                    ),
+                )
+                .await?;
+        }
+        queue_panel::BTN_CLEAR_CONFIRM => {
+            clear_queue(ctx, data, guild_id).await;
+            component
+                .create_response(
+                    ctx,
+                    CreateInteractionResponse::UpdateMessage(
+                        CreateInteractionResponseMessage::new()
+                            .content("Queue cleared.")
+                            .components(Vec::new()),
+                    ),
+                )
+                .await?;
+        }
+        queue_panel::BTN_CLEAR_CANCEL => {
+            component
+                .create_response(
+                    ctx,
+                    CreateInteractionResponse::UpdateMessage(
+                        CreateInteractionResponseMessage::new()
+                            .content("Clear cancelled.")
+                            .components(Vec::new()),
+                    ),
+                )
+                .await?;
+        }
+        queue_panel::SELECT_PAGE => {
+            let ComponentInteractionDataKind::StringSelect { values } = &component.data.kind else {
+                return Ok(());
+            };
 
-            player::persist_queue(data, guild_id).await;
+            let Some(page) = values.first().and_then(|value| value.parse::<usize>().ok()) else {
+                return Ok(());
+            };
+
+            player::set_queue_page(data, guild_id, page).await;
             update_component_to_queue(ctx, data, component, guild_id).await?;
-            player_panel::update_player_message(ctx, data, guild_id)
-                .await
-                .ok();
         }
         queue_panel::SELECT_REMOVE => {
             let ComponentInteractionDataKind::StringSelect { values } = &component.data.kind else {
@@ -212,12 +275,23 @@ pub async fn handle_event(
                 .ok();
 
             if let Some(track) = removed {
-                component
-                    .channel_id
-                    .say(ctx, format!("Removed `{position}.` **{}**", track.title))
-                    .await
-                    .ok();
+                tracing::info!(title = %track.title, position, "removed queued track from select menu");
             }
+        }
+        queue_panel::SELECT_REMOVE_RANGE => {
+            let ComponentInteractionDataKind::StringSelect { values } = &component.data.kind else {
+                return Ok(());
+            };
+
+            let Some((start, end)) = values.first().and_then(|value| parse_range(value)) else {
+                return Ok(());
+            };
+
+            player::remove_queued_track_range(data, guild_id, start, end).await;
+            update_component_to_queue(ctx, data, component, guild_id).await?;
+            player_panel::update_player_message(ctx, data, guild_id)
+                .await
+                .ok();
         }
         _ => {}
     }
@@ -234,6 +308,8 @@ fn requires_music_control(custom_id: &str) -> bool {
             | player_panel::BTN_REPLAY
             | player_panel::BTN_STOP
             | player_panel::BTN_LOOP
+            | player_panel::SELECT_LOOP_MODE
+            | player_panel::SELECT_PLAYLIST_LOAD
             | player_panel::BTN_VOLUME_DOWN
             | player_panel::BTN_VOLUME_UP
             | player_panel::BTN_VOLUME_50
@@ -243,8 +319,101 @@ fn requires_music_control(custom_id: &str) -> bool {
             | player_panel::BTN_NORMALIZE
             | player_panel::BTN_AUTOPLAY
             | queue_panel::BTN_CLEAR
+            | queue_panel::BTN_CLEAR_CONFIRM
+            | queue_panel::SELECT_PAGE
+            | queue_panel::SELECT_REMOVE_RANGE
             | queue_panel::SELECT_REMOVE
     )
+}
+
+async fn respond_ephemeral(
+    ctx: &serenity::Context,
+    component: &serenity::ComponentInteraction,
+    message: String,
+) -> Result<(), Error> {
+    component
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(message)
+                    .ephemeral(true),
+            ),
+        )
+        .await?;
+
+    Ok(())
+}
+
+fn loop_mode_from_value(value: &str) -> Option<LoopMode> {
+    match value {
+        "off" => Some(LoopMode::Off),
+        "one" => Some(LoopMode::One),
+        "queue" => Some(LoopMode::Queue),
+        _ => None,
+    }
+}
+
+fn parse_range(value: &str) -> Option<(usize, usize)> {
+    let (start, end) = value.split_once(':')?;
+    Some((start.parse().ok()?, end.parse().ok()?))
+}
+
+async fn clear_queue(ctx: &serenity::Context, data: &Data, guild_id: serenity::GuildId) {
+    {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        state.queue.clear();
+        state.queue_page = 0;
+    }
+
+    player::persist_queue(data, guild_id).await;
+    queue_panel::update_queue_message(ctx, data, guild_id)
+        .await
+        .ok();
+    player_panel::update_player_message(ctx, data, guild_id)
+        .await
+        .ok();
+}
+
+async fn load_playlist_from_select(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+    component: &serenity::ComponentInteraction,
+    name: &str,
+) -> String {
+    let tracks = match data.db.load_playlist(guild_id, name, component.user.id) {
+        Ok(tracks) if !tracks.is_empty() => tracks,
+        Ok(_) => return format!("Playlist `{name}` kosong atau tidak ditemukan."),
+        Err(err) => return format!("Gagal load playlist: {err}"),
+    };
+
+    if let Err(err) = player::join_user_channel(ctx, guild_id, component.user.id).await {
+        return format!("Gagal join voice channel: {err}");
+    }
+
+    let count = tracks.len();
+    {
+        let state_lock = data.music.get(guild_id).await;
+        let mut state = state_lock.lock().await;
+        state.queue.extend(tracks);
+        state.player_channel_id = Some(component.channel_id);
+    }
+
+    player::persist_queue(data, guild_id).await;
+    if let Err(err) = player::start_if_idle(ctx, data, guild_id).await {
+        return format!("Gagal mulai playlist: {err}");
+    }
+
+    player_panel::update_player_message(ctx, data, guild_id)
+        .await
+        .ok();
+    queue_panel::update_queue_message(ctx, data, guild_id)
+        .await
+        .ok();
+
+    format!("Loaded playlist `{name}` with `{count}` track(s).")
 }
 
 async fn current_volume(data: &Data, guild_id: serenity::GuildId) -> u8 {
