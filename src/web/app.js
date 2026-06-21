@@ -66,11 +66,17 @@
         return;
       }
       event.preventDefault();
-      const body = new FormData(form);
+      const body = new URLSearchParams(new FormData(form));
       if (submitter?.name) body.set(submitter.name, submitter.value);
       if (submitter) submitter.disabled = true;
       try {
-        const response = await fetch(form.action, { method: "POST", body });
+        const response = await fetch(form.action, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: body.toString(),
+        });
         if (response.ok) {
           window.location.assign(response.url);
           return;
