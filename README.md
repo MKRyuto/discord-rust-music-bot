@@ -1,338 +1,134 @@
-# Discord Rust Music Bot
+<div align="center">
 
-> Version 1.5.0 - a modern Discord music bot built with Rust, Serenity, Poise, Songbird, SQLite, and yt-dlp.
+<h1>Discord Rust Music Bot</h1>
 
-Discord Rust Music Bot is a slash-command music bot with per-server queues, interactive embeds, button controls, and YouTube/search playback. It is designed as a clean Rust codebase for a practical Discord music bot, not a giant all-in-one framework.
+<p><strong>A production-minded Discord music bot with consistent audio, persistent queues, and a per-server web dashboard.</strong></p>
 
-## Highlights
+<p>
+  <a href="https://github.com/MKRyuto/discord-rust-music-bot/releases"><img src="https://img.shields.io/badge/release-v2.0.0-42d3b2?style=flat-square" alt="Release v2.0.0"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rustc-1.96.0-ff806f?style=flat-square&logo=rust&logoColor=white" alt="rustc 1.96.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/MKRyuto/discord-rust-music-bot?style=flat-square&color=f8d66d" alt="MIT License"></a>
+  <a href="https://github.com/MKRyuto/discord-rust-music-bot/stargazers"><img src="https://img.shields.io/github/stars/MKRyuto/discord-rust-music-bot?style=flat-square&logo=github" alt="GitHub Stars"></a>
+  <a href="https://github.com/MKRyuto/discord-rust-music-bot/commits/main"><img src="https://img.shields.io/github/last-commit/MKRyuto/discord-rust-music-bot?style=flat-square" alt="Last commit"></a>
+</p>
 
-- Per-server queue and playback state
-- Slash commands only, no message-content intent required
-- YouTube URL and keyword search playback through `yt-dlp`
-- Voice playback through Songbird
-- Playback recovery for failed or stuck tracks
-- Automatic voice disconnect after 60 seconds of idle playback
-- Queue persistence across bot restarts
-- Queue remove and move management commands
-- Top played track history command
-- Play-now command for immediate playback
-- Player panel with pause, resume, skip, stop, loop, queue, volume, shuffle, playlists, and refresh
-- Player panel vote-skip and normalize toggles
-- Player panel loop and playlist select menus
-- Queue panel with paginated navigation
-- Queue panel page jump, remove range, and clear confirmation
-- Queue multi-remove and personal queue cleanup
-- Volume control with persisted guild settings
-- True FFmpeg loudness normalization for uneven track volume, enabled by default
-- DJ role permissions for playback controls
-- Vote skip for non-DJ listeners
-- Configurable per-user play cooldown and queue limit
-- Configurable vote skip threshold and normalize cap
-- Allowed music command channels and keyword/URL blocklist
-- Replay and previous-track controls
-- Per-user and server music stats
-- Playlist append, rename, and load modes
-- Seek command
-- Volume select menu and playlist load mode selector
-- Cleaner player control surface without stale volume preset buttons
-- Interactive category-based help menu
-- Import YouTube playlists into saved playlists
-- Discord bot presence showing `/help | /play`
-- Queue shuffle
-- Saved playlists backed by SQLite
-- `/play` autocomplete from server track history
-- Optional history-based autoplay
-- Common audio container/codec support through Symphonia
-- Development-friendly guild command registration with `DEV_GUILD_ID`
+<p>
+  <a href="#features">Features</a> |
+  <a href="#quick-start">Quick Start</a> |
+  <a href="#documentation">Documentation</a> |
+  <a href="docs/DEPLOYMENT.md">Deployment</a>
+</p>
 
-## Version Matrix
+</div>
 
-Current tested local toolchain:
 
-| Tool | Version |
-| --- | --- |
-| Rust | `rustc 1.96.0` |
-| Cargo | `cargo 1.96.0` |
-| ffmpeg | `8.1.1` |
-| yt-dlp | `2026.06.09` |
 
-Core crate versions:
+![Discord Rust Music Bot dashboard](docs/dashboard-preview.png)
 
-| Crate | Version |
-| --- | --- |
-| `serenity` | `0.12.5` |
-| `poise` | `0.6.2` |
-| `songbird` | `0.6.0` |
-| `reqwest` | `0.12` |
-| `symphonia` | `0.5.5` |
-| `rusqlite` | `0.37` |
-| `tokio` | `1.x` |
+## Overview
 
-`reqwest` and `symphonia` intentionally stay on versions compatible with Songbird 0.6.
+Discord Rust Music Bot combines slash-command playback, interactive Discord panels, and an authenticated web dashboard. Each server gets its own queue, playlists, permissions, playback settings, statistics, and audit history.
 
-## Requirements
+The audio pipeline resolves YouTube sources with `yt-dlp`, plays them through Songbird, and can apply FFmpeg loudness normalization so users do not need to keep changing their volume between tracks.
 
-Install these tools on the host machine:
+## Features
 
-```powershell
-rustup
-ffmpeg
-yt-dlp
-```
+| Audio and playback               | Library and queue                    | Dashboard and control          |
+| -------------------------------- | ------------------------------------ | ------------------------------ |
+| FFmpeg loudness normalization    | Persistent per-server queues         | Discord OAuth2 login           |
+| Play, seek, replay, and previous | Reorder, search, and multi-remove    | Live playback updates with SSE |
+| Loop, shuffle, and autoplay      | Saved and imported YouTube playlists | Player and queue controls      |
+| Playback recovery and idle leave | History and user/server statistics   | DJ roles and allowed channels  |
+| Volume settings per server       | Per-user cooldown and queue limits   | Blocklist and audit log        |
+| Vote skip for voice listeners    | SQLite persistence                   | Privacy and Terms pages        |
 
-On Windows, WinGet works well:
+Additional highlights:
 
-```powershell
-winget install Rustlang.Rustup
-winget install Gyan.FFmpeg.Essentials
-winget install yt-dlp.yt-dlp
-```
+- Slash commands only; no message-content intent required.
+- Interactive player and queue panels with buttons and select menus.
+- Queue and settings survive normal process restarts.
+- Dynamic website identity from the connected Discord bot profile.
+- Encrypted persistent OAuth sessions, CSRF protection, security headers, and rate limiting.
+- Public user documentation at `/docs` with searchable command reference.
 
-Restart your terminal after installing ffmpeg or yt-dlp so `PATH` updates are picked up.
+## Stack
 
-Verify:
+| Layer         | Technology                         |
+| ------------- | ---------------------------------- |
+| Bot framework | Poise + Serenity                   |
+| Voice         | Songbird + Symphonia               |
+| Audio source  | yt-dlp + FFmpeg                    |
+| Web           | Axum + server-rendered HTML/CSS/JS |
+| Storage       | SQLite through rusqlite            |
+| Runtime       | Tokio                              |
 
-```powershell
-rustc --version
-cargo --version
-ffmpeg -version
-yt-dlp --version
-```
+## Quick Start
 
-## Discord Setup
-
-In the Discord Developer Portal:
-
-1. Create an application.
-2. Create a bot user and copy the bot token.
-3. Enable `Guild Voice States`.
-4. Invite the bot using these scopes:
-
-```text
-bot applications.commands
-```
-
-Recommended permissions:
-
-```text
-View Channels
-Send Messages
-Embed Links
-Connect
-Speak
-Use Slash Commands
-```
-
-## Configuration
-
-Create your local `.env` file:
+Install Rust, FFmpeg, and yt-dlp, then create the local environment file:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Set:
-
-```env
-DISCORD_TOKEN=your_discord_bot_token_here
-DEV_GUILD_ID=
-MUSIC_DB_PATH=music_bot.db
-```
-
-`DEV_GUILD_ID` is optional. When set, commands register quickly to one server. When empty, commands register globally and can take longer to appear.
-
-`MUSIC_DB_PATH` is optional and defaults to `music_bot.db`. The database stores saved playlists and per-guild volume settings.
-
-Never commit `.env` or local database files. The repository `.gitignore` excludes them.
-
-## Running
-
-Development:
+At minimum, configure the Discord bot token and application values in `.env`, then run:
 
 ```powershell
 cargo run
 ```
 
-Release build:
+The dashboard is available at `http://127.0.0.1:3000` by default. Discord OAuth requires the matching callback URL:
+
+```text
+http://127.0.0.1:3000/auth/callback
+```
+
+For the complete Discord Developer Portal, OAuth, environment, reverse proxy, and production checklist, read the [Deployment Guide](docs/DEPLOYMENT.md).
+
+## Documentation
+
+- **User guide:** open `/docs` on the running dashboard for features, commands, dashboard usage, and permissions.
+- **Operator guide:** [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers installation and deployment.
+- **Configuration template:** [.env.example](.env.example) lists every supported environment variable.
+- **Discord help:** use `/help` for the interactive in-server command menu.
+
+## Development
+
+Run the same checks used before release:
 
 ```powershell
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
 cargo build --release
 ```
 
-Update compatible Rust dependencies:
+Preview only the public website without connecting a Discord client:
 
-```powershell
-cargo update
-cargo check
+```env
+WEB_PREVIEW=true
+WEB_ENABLED=true
 ```
 
-Update local tools:
+Never enable preview mode in a production bot deployment.
 
-```powershell
-rustup update
-winget upgrade yt-dlp.yt-dlp
-winget upgrade Gyan.FFmpeg.Essentials
-```
-
-## Commands
-
-| Command | Description |
-| --- | --- |
-| `/play query_or_url:<text>` | Play a YouTube URL or search keyword. Queues the track if something is already playing. |
-| `/playnow query_or_url:<text>` | Play a track immediately while keeping the existing queue. |
-| `/replay` | Replay the current track from the beginning. |
-| `/previous` | Play the previous track. |
-| `/seek position:<text>` | Seek current track, for example `90`, `1:30`, or `01:02:03`. |
-| `/help` | Show bot command help. |
-| `/voteskip` | Vote to skip the current track. |
-| `/history limit:<number>` | Show the most played tracks in the current server. |
-| `/stats server` | Show server music stats. |
-| `/stats user user:<user>` | Show user music stats. |
-| `/config show` | Show server music settings. |
-| `/config cooldown seconds:<number>` | Set per-user `/play` cooldown. |
-| `/config maxqueue limit:<number>` | Set max active queued tracks per user. |
-| `/config voteskip percent:<number>` | Set vote skip threshold. |
-| `/config normalize-cap percent:<number>` | Set effective volume cap when normalize is enabled. |
-| `/config default-volume percent:<number>` | Set default/current server volume. |
-| `/config idle-timeout seconds:<number>` | Set auto-leave idle timeout. |
-| `/config reset` | Reset music config to defaults. |
-| `/config allow-channel channel:<channel>` | Limit music controls to a channel. |
-| `/config unallow-channel channel:<channel>` | Remove a channel from the allowlist. |
-| `/config allowed-channels` | Show allowed music channels. |
-| `/config block term:<text>` | Block a keyword or URL from playback. |
-| `/config unblock term:<text>` | Remove a term from the blocklist. |
-| `/config blocklist` | Show blocked terms. |
-| `/queue` | Show the queue panel. |
-| `/queue show` | Show the queue panel. |
-| `/queue clear` | Clear queued tracks. |
-| `/queue mine` | Show your queued tracks. |
-| `/queue remove-mine` | Remove your queued tracks. |
-| `/queue remove position:<number>` | Remove a queued track by queue number. |
-| `/queue remove-search query:<text>` | Remove the first queued track matching title or URL text. |
-| `/queue remove-range start:<number> end:<number>` | Remove several queued tracks at once. |
-| `/queue jump page:<number>` | Jump the queue panel to a page. |
-| `/queue move from:<number> to:<number>` | Move a queued track to another queue position. |
-| `/now` | Show the player panel. |
-| `/leave` | Stop playback and disconnect from voice. |
-| `/autoplay enabled:<true/false>` | Toggle history-based autoplay for the current server. |
-| `/normalize enabled:<true/false>` | Toggle FFmpeg loudnorm and dynamic normalization. |
-| `/djrole add role:<role>` | Allow a role to control playback. |
-| `/djrole remove role:<role>` | Remove a role from playback control. |
-| `/djrole list` | Show roles allowed to control playback. |
-| `/volume percent:<0-200>` | Set playback volume for the current server. |
-| `/shuffle` | Shuffle the queued tracks. |
-| `/playlist save name:<text>` | Save now playing and the queue as a playlist. |
-| `/playlist append name:<text>` | Append now playing and the queue to a saved playlist. |
-| `/playlist import-youtube name:<text> url:<url> append:<bool>` | Import up to 100 tracks from a YouTube playlist. |
-| `/playlist load name:<text> mode:<append/replace/playnow>` | Load a saved playlist into the queue. |
-| `/playlist rename old_name:<text> new_name:<text>` | Rename a saved playlist. |
-| `/playlist list` | Show saved playlists for the current server. |
-| `/playlist delete name:<text>` | Delete a saved playlist. |
-
-## Controls
-
-Player panel:
-
-- Pause / Resume
-- Previous
-- Replay
-- Skip
-- Vote Skip
-- Stop
-- Queue
-- Loop mode select menu
-- Volume down
-- Volume up
-- Volume select menu
-- Shuffle queue
-- Normalize toggle
-- Autoplay toggle
-- Playlist load select menu
-- Playlist load mode select menu
-- Refresh
-
-Queue panel:
-
-- Prev Page
-- Next Page
-- Clear
-- Clear confirmation
-- Page jump select menu
-- Remove range select menu
-- Player
-- Multi-remove track select menu
-
-## Permissions
-
-When no DJ role is configured, everyone can use music controls. After one or more DJ roles are added with `/djrole add`, playback controls are limited to server administrators, users with `Manage Server`, and members with one of the configured DJ roles.
-
-Protected controls include play-now, stop, skip, leave, shuffle, volume, autoplay, normalize, queue clear/remove/move, playlist load/import/delete, and matching player/queue panel buttons. Normal `/play`, `/queue`, `/now`, `/history`, playlist save, and playlist list stay open.
-
-`/play` has a configurable per-user cooldown and each user can keep a configurable number of tracks in the active queue. `/voteskip` stays open to listeners in voice so regular members can skip with enough votes without getting full DJ control.
-
-## Project Structure
+## Project Layout
 
 ```text
 src/
-|-- main.rs
-|-- commands/
-|   |-- history.rs
-|   |-- leave.rs
-|   |-- now.rs
-|   |-- autoplay.rs
-|   |-- playlist.rs
-|   |-- play.rs
-|   |-- playnow.rs
-|   |-- queue.rs
-|   |-- shuffle.rs
-|   `-- volume.rs
-|-- interactions/
-|   `-- buttons.rs
-|-- music/
-|   |-- player.rs
-|   |-- state.rs
-|   `-- track.rs
-|-- storage.rs
-`-- ui/
-    |-- player_panel.rs
-    `-- queue_panel.rs
+|-- commands/       Slash commands
+|-- interactions/   Discord component handlers
+|-- music/          Playback, queue, and track state
+|-- ui/             Discord player and queue panels
+|-- web/            Dashboard CSS, JavaScript, and docs content
+|-- storage.rs      SQLite persistence
+|-- web.rs          HTTP routes, OAuth, and dashboard handlers
+`-- main.rs         Bot startup and command registration
 ```
 
-## Troubleshooting
+## Security
 
-No sound:
-
-- Make sure the bot has `Connect` and `Speak` permission.
-- Make sure you are in a voice channel before running `/play`.
-- Run `ffmpeg -version` and `yt-dlp --version` in a new terminal.
-- Restart the bot after installing ffmpeg or yt-dlp.
-- Check logs for `starting track playback` and `songbird track event`.
-
-Slash commands do not appear:
-
-- Set `DEV_GUILD_ID` during development for faster command registration.
-- Global commands can take time to propagate.
-- Reinvite the bot with `applications.commands`.
-
-yt-dlp fails:
-
-- Update it with `winget upgrade yt-dlp.yt-dlp`.
-- Try a direct YouTube URL to separate search issues from playback issues.
-
-Autoplay does nothing:
-
-- Autoplay uses this server's playback history.
-- Play a few tracks first so the history table has songs to pick from.
-- Enable it with `/autoplay enabled:true`.
-
-## Security Notes
-
-If a real Discord token is ever committed or shared, reset it immediately in the Discord Developer Portal. Treat bot tokens like passwords.
-
-## Platform Notes
-
-This project uses `yt-dlp` to resolve and stream media. If you run this bot publicly, make sure your usage follows the rules of the platforms you access.
+Do not commit `.env`, the SQLite database, Discord tokens, OAuth secrets, or `SESSION_SECRET`. Public deployments must use HTTPS and a stable session secret. See the [security checklist](docs/DEPLOYMENT.md#production-checklist).
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE).
+Licensed under the [MIT License](LICENSE).

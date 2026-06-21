@@ -38,6 +38,14 @@ pub struct UserStats {
 }
 
 #[derive(Clone, Debug)]
+pub struct AuditEntry {
+    pub actor_name: String,
+    pub action: String,
+    pub detail: String,
+    pub created_at: u64,
+}
+
+#[derive(Clone, Debug)]
 pub struct ServerStats {
     pub unique_tracks: usize,
     pub total_plays: usize,
@@ -68,6 +76,20 @@ impl Database {
         conn.execute_batch(
             "
             PRAGMA foreign_keys = ON;
+
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS web_sessions (
+                session_id TEXT PRIMARY KEY,
+                payload BLOB NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_web_sessions_expires_at
+                ON web_sessions(expires_at);
 
             CREATE TABLE IF NOT EXISTS guild_settings (
                 guild_id TEXT PRIMARY KEY,
@@ -151,6 +173,19 @@ impl Database {
                 is_now_playing INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (guild_id, position)
             );
+
+            CREATE TABLE IF NOT EXISTS web_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                actor_name TEXT NOT NULL,
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_web_audit_guild_created
+                ON web_audit_log(guild_id, created_at DESC);
             ",
         )?;
 
@@ -186,11 +221,129 @@ impl Database {
             }
         }
 
+        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?1)",
+            params![applied_at],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ?1)",
+            params![applied_at],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?1)",
+            params![applied_at],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?1)",
+            params![applied_at],
+        )?;
+
         Ok(())
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn save_web_session(
+        &self,
+        session_id: &str,
+        payload: &[u8],
+        expires_at: u64,
+    ) -> Result<(), Error> {
+        let conn = self.connect()?;
+        conn.execute(
+            "
+            INSERT INTO web_sessions (session_id, payload, expires_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(session_id) DO UPDATE SET
+                payload = excluded.payload,
+                expires_at = excluded.expires_at
+            ",
+            params![session_id, payload, expires_at as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_web_sessions(&self, now: u64) -> Result<Vec<(String, Vec<u8>)>, Error> {
+        let conn = self.connect()?;
+        conn.execute(
+            "DELETE FROM web_sessions WHERE expires_at <= ?1",
+            params![now as i64],
+        )?;
+        let mut stmt =
+            conn.prepare("SELECT session_id, payload FROM web_sessions WHERE expires_at > ?1")?;
+        let rows = stmt.query_map(params![now as i64], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn delete_web_session(&self, session_id: &str) -> Result<(), Error> {
+        let conn = self.connect()?;
+        conn.execute(
+            "DELETE FROM web_sessions WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn purge_web_sessions(&self, now: u64) -> Result<(), Error> {
+        let conn = self.connect()?;
+        conn.execute(
+            "DELETE FROM web_sessions WHERE expires_at <= ?1",
+            params![now as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn add_web_audit(
+        &self,
+        guild_id: serenity::GuildId,
+        actor_id: serenity::UserId,
+        actor_name: &str,
+        action: &str,
+        detail: &str,
+    ) -> Result<(), Error> {
+        let conn = self.connect()?;
+        let created_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+        conn.execute(
+            "INSERT INTO web_audit_log
+             (guild_id, actor_id, actor_name, action, detail, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                guild_id.get().to_string(),
+                actor_id.get().to_string(),
+                actor_name,
+                action,
+                detail,
+                created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn web_audit_log(
+        &self,
+        guild_id: serenity::GuildId,
+        limit: usize,
+    ) -> Result<Vec<AuditEntry>, Error> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT actor_name, action, detail, created_at
+             FROM web_audit_log
+             WHERE guild_id = ?1
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![guild_id.get().to_string(), limit as i64], |row| {
+            Ok(AuditEntry {
+                actor_name: row.get(0)?,
+                action: row.get(1)?,
+                detail: row.get(2)?,
+                created_at: row.get::<_, i64>(3)?.max(0) as u64,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     pub fn guild_volume(&self, guild_id: serenity::GuildId) -> Result<u8, Error> {
@@ -346,6 +499,28 @@ impl Database {
         Ok(changed > 0)
     }
 
+    pub fn replace_dj_roles(
+        &self,
+        guild_id: serenity::GuildId,
+        role_ids: &[serenity::RoleId],
+    ) -> Result<(), Error> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        let guild_id = guild_id.get().to_string();
+        tx.execute(
+            "DELETE FROM dj_roles WHERE guild_id = ?1",
+            params![guild_id],
+        )?;
+        for role_id in role_ids {
+            tx.execute(
+                "INSERT INTO dj_roles (guild_id, role_id) VALUES (?1, ?2)",
+                params![guild_id, role_id.get().to_string()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn allowed_channels(
         &self,
         guild_id: serenity::GuildId,
@@ -403,6 +578,28 @@ impl Database {
         Ok(changed > 0)
     }
 
+    pub fn replace_allowed_channels(
+        &self,
+        guild_id: serenity::GuildId,
+        channel_ids: &[serenity::ChannelId],
+    ) -> Result<(), Error> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        let guild_id = guild_id.get().to_string();
+        tx.execute(
+            "DELETE FROM allowed_channels WHERE guild_id = ?1",
+            params![guild_id],
+        )?;
+        for channel_id in channel_ids {
+            tx.execute(
+                "INSERT INTO allowed_channels (guild_id, channel_id) VALUES (?1, ?2)",
+                params![guild_id, channel_id.get().to_string()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn blocked_terms(&self, guild_id: serenity::GuildId) -> Result<Vec<String>, Error> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
@@ -443,6 +640,31 @@ impl Database {
         )?;
 
         Ok(changed > 0)
+    }
+
+    pub fn replace_blocked_terms(
+        &self,
+        guild_id: serenity::GuildId,
+        terms: &[String],
+    ) -> Result<(), Error> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        let guild_id = guild_id.get().to_string();
+        tx.execute(
+            "DELETE FROM blocked_terms WHERE guild_id = ?1",
+            params![guild_id],
+        )?;
+        for term in terms {
+            let term = normalize_term(term);
+            if !term.is_empty() {
+                tx.execute(
+                    "INSERT OR IGNORE INTO blocked_terms (guild_id, term) VALUES (?1, ?2)",
+                    params![guild_id, term],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn is_blocked_query(
@@ -974,6 +1196,67 @@ impl Database {
         Ok(existing.len())
     }
 
+    pub fn create_empty_playlist(
+        &self,
+        guild_id: serenity::GuildId,
+        name: &str,
+        created_by: serenity::UserId,
+    ) -> Result<bool, Error> {
+        let conn = self.connect()?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+        let changed = conn.execute(
+            "INSERT OR IGNORE INTO playlists (guild_id, name, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                guild_id.get().to_string(),
+                name,
+                created_by.get().to_string(),
+                now
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    pub fn remove_playlist_track(
+        &self,
+        guild_id: serenity::GuildId,
+        name: &str,
+        position: usize,
+        requested_by: serenity::UserId,
+    ) -> Result<Option<Track>, Error> {
+        if position == 0 {
+            return Ok(None);
+        }
+        let mut tracks = self.load_playlist(guild_id, name, requested_by)?;
+        if position > tracks.len() {
+            return Ok(None);
+        }
+        let removed = tracks.remove(position - 1);
+        self.save_playlist(guild_id, name, requested_by, &tracks)?;
+        Ok(Some(removed))
+    }
+
+    pub fn move_playlist_track(
+        &self,
+        guild_id: serenity::GuildId,
+        name: &str,
+        from_position: usize,
+        to_position: usize,
+        requested_by: serenity::UserId,
+    ) -> Result<bool, Error> {
+        if from_position == 0 || to_position == 0 {
+            return Ok(false);
+        }
+        let mut tracks = self.load_playlist(guild_id, name, requested_by)?;
+        if from_position > tracks.len() || to_position > tracks.len() {
+            return Ok(false);
+        }
+        let track = tracks.remove(from_position - 1);
+        tracks.insert(to_position - 1, track);
+        self.save_playlist(guild_id, name, requested_by, &tracks)?;
+        Ok(true)
+    }
+
     pub fn load_playlist(
         &self,
         guild_id: serenity::GuildId,
@@ -1035,6 +1318,18 @@ impl Database {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    pub fn playlist_exists(&self, guild_id: serenity::GuildId, name: &str) -> Result<bool, Error> {
+        let conn = self.connect()?;
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM playlists WHERE guild_id = ?1 AND name = ?2",
+                params![guild_id.get().to_string(), name],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
     pub fn search_playlists(
         &self,
         guild_id: serenity::GuildId,
@@ -1089,6 +1384,7 @@ impl Database {
     ) -> Result<bool, Error> {
         let mut conn = self.connect()?;
         let tx = conn.transaction()?;
+        tx.execute_batch("PRAGMA defer_foreign_keys = ON;")?;
         let guild_id_raw = guild_id.get().to_string();
 
         let changed = tx.execute(
@@ -1118,4 +1414,77 @@ impl Database {
 
 fn normalize_term(term: &str) -> String {
     term.trim().to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn playlist_rename_and_audit_are_persistent() {
+        let path = std::env::temp_dir().join(format!("music-bot-test-{}.db", uuid::Uuid::new_v4()));
+        let db = Database::new(&path).expect("database opens");
+        let guild_id = serenity::GuildId::new(10);
+        let user_id = serenity::UserId::new(20);
+        let track = Track {
+            title: "Track".to_string(),
+            url: "https://example.com/track".to_string(),
+            duration_secs: Some(60),
+            requested_by: user_id,
+            thumbnail: None,
+        };
+        db.save_playlist(guild_id, "Old", user_id, &[track.clone()])
+            .expect("playlist saves");
+        assert!(db
+            .rename_playlist(guild_id, "Old", "New")
+            .expect("playlist renames"));
+        assert_eq!(
+            db.load_playlist(guild_id, "New", user_id)
+                .expect("playlist loads")
+                .len(),
+            1
+        );
+        assert!(db
+            .create_empty_playlist(guild_id, "Manual", user_id)
+            .expect("empty playlist creates"));
+        assert!(!db
+            .create_empty_playlist(guild_id, "Manual", user_id)
+            .expect("duplicate playlist is ignored"));
+        assert!(db
+            .playlist_exists(guild_id, "Manual")
+            .expect("playlist exists"));
+
+        let second = Track {
+            title: "Second".to_string(),
+            url: "https://example.com/second".to_string(),
+            duration_secs: Some(90),
+            requested_by: user_id,
+            thumbnail: None,
+        };
+        db.append_playlist(guild_id, "New", user_id, &[second])
+            .expect("track appends");
+        assert!(db
+            .move_playlist_track(guild_id, "New", 2, 1, user_id)
+            .expect("track moves"));
+        let reordered = db
+            .load_playlist(guild_id, "New", user_id)
+            .expect("reordered playlist loads");
+        assert_eq!(reordered[0].title, "Second");
+        assert_eq!(
+            db.remove_playlist_track(guild_id, "New", 2, user_id)
+                .expect("track removes")
+                .expect("track was present")
+                .title,
+            track.title
+        );
+
+        db.add_web_audit(guild_id, user_id, "Admin", "playlist.renamed", "Old to New")
+            .expect("audit saves");
+        let audit = db.web_audit_log(guild_id, 10).expect("audit loads");
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].action, "playlist.renamed");
+
+        drop(db);
+        std::fs::remove_file(path).expect("test database removed");
+    }
 }

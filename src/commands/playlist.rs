@@ -205,18 +205,10 @@ pub async fn import_youtube(
         .guild_id()
         .ok_or("Command ini cuma bisa dipakai di server.")?;
     let name = normalize_name(&name)?;
-    validate_youtube_playlist_url(&url)?;
     ctx.defer_ephemeral().await?;
 
     let requested_by = ctx.author().id;
-    let import_url = url.clone();
-    let tracks = tokio::time::timeout(
-        Duration::from_secs(45),
-        tokio::task::spawn_blocking(move || import_youtube_tracks(&import_url, requested_by)),
-    )
-    .await
-    .map_err(|_| "Import playlist timeout setelah 45 detik.")??;
-    let tracks = tracks?;
+    let tracks = fetch_youtube_playlist(url, requested_by).await?;
 
     if tracks.is_empty() {
         ctx.say("Tidak ada video yang bisa diimport dari playlist itu.")
@@ -242,6 +234,20 @@ pub async fn import_youtube(
     .await?;
 
     Ok(())
+}
+
+pub async fn fetch_youtube_playlist(
+    url: String,
+    requested_by: serenity::UserId,
+) -> Result<Vec<Track>, Error> {
+    validate_youtube_playlist_url(&url)?;
+    let tracks = tokio::time::timeout(
+        Duration::from_secs(45),
+        tokio::task::spawn_blocking(move || import_youtube_tracks(&url, requested_by)),
+    )
+    .await
+    .map_err(|_| "Import playlist timeout setelah 45 detik.")??;
+    tracks
 }
 
 /// Lihat semua saved playlist.

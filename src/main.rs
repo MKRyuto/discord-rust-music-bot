@@ -4,6 +4,7 @@ mod music;
 mod permissions;
 mod storage;
 mod ui;
+mod web;
 
 use std::{env, sync::Arc};
 
@@ -29,11 +30,32 @@ async fn main() -> Result<(), Error> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let token = env::var("DISCORD_TOKEN")
-        .expect("DISCORD_TOKEN belum diisi. Copy .env.example ke .env lalu isi token bot.");
     let db_path = env::var("MUSIC_DB_PATH").unwrap_or_else(|_| "music_bot.db".to_string());
     let db = Arc::new(Database::new(db_path)?);
     tracing::info!("Using music database at {}", db.path().display());
+
+    if env::var("WEB_PREVIEW")
+        .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
+        .unwrap_or(false)
+    {
+        let data = Data {
+            music: Arc::new(MusicStore::default()),
+            http_client: reqwest::Client::new(),
+            db,
+        };
+        web::spawn(
+            data,
+            Arc::new(serenity::Cache::new()),
+            None,
+            web::BotProfile::preview(),
+        )?;
+        tracing::info!("WEB_PREVIEW enabled; Discord client is not started");
+        tokio::signal::ctrl_c().await?;
+        return Ok(());
+    }
+
+    let token = env::var("DISCORD_TOKEN")
+        .expect("DISCORD_TOKEN belum diisi. Copy .env.example ke .env lalu isi token bot.");
 
     let intents = GatewayIntents::non_privileged() | GatewayIntents::GUILD_VOICE_STATES;
 
@@ -70,7 +92,7 @@ async fn main() -> Result<(), Error> {
 
     let framework = poise::Framework::builder()
         .options(options)
-        .setup(|ctx, _ready, framework| {
+        .setup(|ctx, ready, framework| {
             Box::pin(async move {
                 if let Ok(guild_id_raw) = env::var("DEV_GUILD_ID") {
                     if !guild_id_raw.trim().is_empty() {
@@ -101,11 +123,20 @@ async fn main() -> Result<(), Error> {
                     tracing::info!(guild_id = %guild_id, restored_count, "restored persisted queue");
                 }
 
-                Ok(Data {
+                let data = Data {
                     music,
                     http_client: reqwest::Client::new(),
                     db,
-                })
+                };
+
+                web::spawn(
+                    data.clone(),
+                    ctx.cache.clone(),
+                    Some(Arc::new(ctx.clone())),
+                    web::BotProfile::from_ready(ready),
+                )?;
+
+                Ok(data)
             })
         })
         .build();

@@ -127,6 +127,20 @@ pub async fn set_volume(
     guild_id: serenity::GuildId,
     volume_percent: u8,
 ) -> Result<(), Error> {
+    set_volume_from_dashboard(data, guild_id, volume_percent).await?;
+
+    player_panel::update_player_message(ctx, data, guild_id)
+        .await
+        .ok();
+
+    Ok(())
+}
+
+pub async fn set_volume_from_dashboard(
+    data: &Data,
+    guild_id: serenity::GuildId,
+    volume_percent: u8,
+) -> Result<(), Error> {
     data.db.set_guild_volume(guild_id, volume_percent)?;
 
     let current_handle = {
@@ -141,10 +155,6 @@ pub async fn set_volume(
         handle
             .set_volume(effective_volume_percent(data, guild_id, volume_percent)? as f32 / 100.0)?;
     }
-
-    player_panel::update_player_message(ctx, data, guild_id)
-        .await
-        .ok();
 
     Ok(())
 }
