@@ -37,7 +37,7 @@ The audio pipeline resolves YouTube sources with `yt-dlp`, plays them through So
 | -------------------------------- | ------------------------------------ | ------------------------------ |
 | FFmpeg loudness normalization    | Persistent per-server queues         | Discord OAuth2 login           |
 | Play, seek, replay, and previous | Reorder, search, and multi-remove    | Live playback updates with SSE |
-| Loop, shuffle, and autoplay      | Saved and imported YouTube playlists | Player and queue controls      |
+| Loop, shuffle, and autoplay      | Manual editor and YouTube imports     | Player and queue controls      |
 | Playback recovery and idle leave | History and user/server statistics   | DJ roles and allowed channels  |
 | Volume settings per server       | Per-user cooldown and queue limits   | Blocklist and audit log        |
 | Vote skip for voice listeners    | SQLite persistence                   | Privacy and Terms pages        |
@@ -49,6 +49,7 @@ Additional highlights:
 - Queue and settings survive normal process restarts.
 - Dynamic website identity from the connected Discord bot profile.
 - Encrypted persistent OAuth sessions, CSRF protection, security headers, and rate limiting.
+- SQLite WAL mode with busy-write protection and scheduled online backups.
 - Public user documentation at `/docs` with searchable command reference.
 
 ## Stack

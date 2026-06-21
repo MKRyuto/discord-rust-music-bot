@@ -84,6 +84,10 @@ Example development configuration:
 DISCORD_TOKEN=your_discord_bot_token_here
 DEV_GUILD_ID=
 MUSIC_DB_PATH=music_bot.db
+MUSIC_DB_BACKUP_ENABLED=true
+MUSIC_DB_BACKUP_DIR=backups
+MUSIC_DB_BACKUP_INTERVAL_HOURS=24
+MUSIC_DB_BACKUP_RETENTION=7
 
 WEB_ENABLED=true
 WEB_PREVIEW=false
@@ -108,6 +112,10 @@ SESSION_SECRET=replace_with_a_long_random_secret_at_least_32_chars
 | `SESSION_SECRET` | Production | Encrypts persisted OAuth sessions. Use at least 32 random characters. |
 | `DEV_GUILD_ID` | No | Registers commands quickly to one development server. Empty means global registration. |
 | `MUSIC_DB_PATH` | No | SQLite path; defaults to `music_bot.db`. |
+| `MUSIC_DB_BACKUP_ENABLED` | No | Enables online SQLite backups; defaults to `true`. |
+| `MUSIC_DB_BACKUP_DIR` | No | Backup destination; use persistent storage in production. |
+| `MUSIC_DB_BACKUP_INTERVAL_HOURS` | No | Hours between backups; defaults to `24`. |
+| `MUSIC_DB_BACKUP_RETENTION` | No | Number of newest backup files retained; defaults to `7`. |
 | `WEB_ENABLED` | No | Set `false` to disable the web server. |
 | `WEB_PREVIEW` | No | Runs only the public website without Discord. Development only. |
 | `WEB_BIND` | No | HTTP bind address; defaults to `127.0.0.1:3000`. |
@@ -159,7 +167,13 @@ SQLite stores:
 - Encrypted OAuth sessions
 - Dashboard audit entries
 
-Back up the SQLite database regularly. When copying a live database, use a SQLite-aware backup process or stop the bot first to avoid inconsistent snapshots.
+The bot uses SQLite WAL mode, waits up to five seconds for busy writes, and creates online backups without stopping playback. Put `MUSIC_DB_BACKUP_DIR` on persistent storage, preferably a different volume or a provider-backed mount. The configured retention removes only matching backup files created for this database.
+
+## Web Access Model
+
+Public routes such as `/`, `/docs`, `/invite`, `/privacy`, and `/terms` are available to regular users. The server list and every `/dashboard/:guild_id` control require Discord OAuth and are shown only to the server owner or a member with `Administrator` or `Manage Server`.
+
+DJ roles control protected commands inside Discord. A DJ role alone does not grant web dashboard administration.
 
 ## Production Checklist
 
@@ -171,6 +185,7 @@ Back up the SQLite database regularly. When copying a live database, use a SQLit
 - [ ] Keep `WEB_PREVIEW=false`.
 - [ ] Restrict filesystem access to `.env` and the SQLite database.
 - [ ] Configure automated database backups.
+- [ ] Put `MUSIC_DB_BACKUP_DIR` on persistent storage and verify a backup can be restored.
 - [ ] Test login, logout, session restoration, and OAuth refresh.
 - [ ] Test play, pause, skip, previous, queue changes, and playlist playback in a real voice channel.
 - [ ] Check `/privacy`, `/terms`, `/docs`, and `/healthz` from the public domain.

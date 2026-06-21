@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use poise::serenity_prelude as serenity;
@@ -60,7 +60,10 @@ impl Database {
     }
 
     fn connect(&self) -> Result<Connection, Error> {
-        Ok(Connection::open(&self.path)?)
+        let conn = Connection::open(&self.path)?;
+        conn.busy_timeout(Duration::from_secs(5))?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        Ok(conn)
     }
 
     fn init(&self) -> Result<(), Error> {
@@ -75,7 +78,8 @@ impl Database {
         let conn = self.connect()?;
         conn.execute_batch(
             "
-            PRAGMA foreign_keys = ON;
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
 
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 version INTEGER PRIMARY KEY,
@@ -244,6 +248,49 @@ impl Database {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn create_backup(&self, backup_dir: &Path, retention: usize) -> Result<PathBuf, Error> {
+        std::fs::create_dir_all(backup_dir)?;
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let stem = self
+            .path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("music-bot");
+        let backup_path = backup_dir.join(format!("{stem}-{timestamp}.db"));
+        let source = self.connect()?;
+        let mut destination = Connection::open(&backup_path)?;
+        let backup = rusqlite::backup::Backup::new(&source, &mut destination)?;
+        backup.run_to_completion(64, Duration::from_millis(50), None)?;
+        drop(backup);
+        destination.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        self.prune_backups(backup_dir, stem, retention.max(1))?;
+        Ok(backup_path)
+    }
+
+    fn prune_backups(&self, backup_dir: &Path, stem: &str, retention: usize) -> Result<(), Error> {
+        let prefix = format!("{stem}-");
+        let mut backups = std::fs::read_dir(backup_dir)?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                let name = path.file_name()?.to_str()?;
+                if path.is_file() && name.starts_with(&prefix) && name.ends_with(".db") {
+                    let modified = entry.metadata().ok()?.modified().ok()?;
+                    Some((modified, path))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        backups.sort_by_key(|(modified, _)| *modified);
+        let remove_count = backups.len().saturating_sub(retention);
+        for (_, path) in backups.into_iter().take(remove_count) {
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
     }
 
     pub fn save_web_session(
@@ -1426,6 +1473,19 @@ mod tests {
         let db = Database::new(&path).expect("database opens");
         let guild_id = serenity::GuildId::new(10);
         let user_id = serenity::UserId::new(20);
+        let conn = db.connect().expect("configured connection opens");
+        assert_eq!(
+            conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+                .expect("journal mode reads")
+                .to_lowercase(),
+            "wal"
+        );
+        assert_eq!(
+            conn.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+                .expect("foreign keys read"),
+            1
+        );
+        drop(conn);
         let track = Track {
             title: "Track".to_string(),
             url: "https://example.com/track".to_string(),
@@ -1433,7 +1493,7 @@ mod tests {
             requested_by: user_id,
             thumbnail: None,
         };
-        db.save_playlist(guild_id, "Old", user_id, &[track.clone()])
+        db.save_playlist(guild_id, "Old", user_id, std::slice::from_ref(&track))
             .expect("playlist saves");
         assert!(db
             .rename_playlist(guild_id, "Old", "New")
@@ -1484,7 +1544,20 @@ mod tests {
         assert_eq!(audit.len(), 1);
         assert_eq!(audit[0].action, "playlist.renamed");
 
+        let backup_dir =
+            std::env::temp_dir().join(format!("music-bot-backup-test-{}", uuid::Uuid::new_v4()));
+        let backup_path = db
+            .create_backup(&backup_dir, 2)
+            .expect("online backup succeeds");
+        let backup_db = Database::new(&backup_path).expect("backup database opens");
+        assert!(backup_db
+            .playlist_exists(guild_id, "New")
+            .expect("backup contains playlist"));
+        drop(backup_db);
+
         drop(db);
         std::fs::remove_file(path).expect("test database removed");
+        std::fs::remove_file(backup_path).expect("test backup removed");
+        std::fs::remove_dir(backup_dir).expect("test backup directory removed");
     }
 }

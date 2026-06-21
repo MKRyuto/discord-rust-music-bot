@@ -6,7 +6,7 @@ mod storage;
 mod ui;
 mod web;
 
-use std::{env, sync::Arc};
+use std::{env, path::PathBuf, sync::Arc, time::Duration};
 
 use poise::serenity_prelude as serenity;
 use serenity::{ActivityData, ClientBuilder, GatewayIntents};
@@ -33,6 +33,7 @@ async fn main() -> Result<(), Error> {
     let db_path = env::var("MUSIC_DB_PATH").unwrap_or_else(|_| "music_bot.db".to_string());
     let db = Arc::new(Database::new(db_path)?);
     tracing::info!("Using music database at {}", db.path().display());
+    spawn_database_backups(db.clone());
 
     if env::var("WEB_PREVIEW")
         .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
@@ -149,4 +150,50 @@ async fn main() -> Result<(), Error> {
     client.start().await?;
 
     Ok(())
+}
+
+fn spawn_database_backups(db: Arc<Database>) {
+    let enabled = env::var("MUSIC_DB_BACKUP_ENABLED")
+        .map(|value| !value.eq_ignore_ascii_case("false") && value != "0")
+        .unwrap_or(true);
+    if !enabled {
+        tracing::info!("automatic SQLite backups disabled");
+        return;
+    }
+
+    let backup_dir = env::var("MUSIC_DB_BACKUP_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            db.path()
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("backups")
+        });
+    let interval_hours = env::var("MUSIC_DB_BACKUP_INTERVAL_HOURS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(24)
+        .clamp(1, 24 * 365);
+    let retention = env::var("MUSIC_DB_BACKUP_RETENTION")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(7)
+        .clamp(1, 365);
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(interval_hours * 60 * 60));
+        loop {
+            interval.tick().await;
+            let db = db.clone();
+            let backup_dir = backup_dir.clone();
+            match tokio::task::spawn_blocking(move || db.create_backup(&backup_dir, retention))
+                .await
+            {
+                Ok(Ok(path)) => tracing::info!(path = %path.display(), "SQLite backup completed"),
+                Ok(Err(error)) => tracing::error!(?error, "SQLite backup failed"),
+                Err(error) => tracing::error!(?error, "SQLite backup task failed"),
+            }
+        }
+    });
 }

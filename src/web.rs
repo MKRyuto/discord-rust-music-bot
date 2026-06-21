@@ -2321,4 +2321,20 @@ mod tests {
         assert_eq!(restored.csrf_token, "csrf");
         assert_eq!(restored.token.expect("token exists").access_token, "access");
     }
+
+    #[test]
+    fn playlist_editor_renders_manual_track_controls() {
+        let tracks = vec![crate::music::track::Track {
+            title: "Example Track".to_string(),
+            url: "https://example.com/track".to_string(),
+            duration_secs: Some(90),
+            requested_by: serenity::UserId::new(1),
+            thumbnail: None,
+        }];
+        let html = playlist_editor_item(10, "csrf", "Favorites", &tracks);
+        assert!(html.contains("/dashboard/10/playlists/add-track"));
+        assert!(html.contains("/dashboard/10/playlists/track"));
+        assert!(html.contains("Example Track"));
+        assert!(html.contains("value=\"remove\""));
+    }
 }
