@@ -73,7 +73,8 @@
     button.setAttribute("aria-busy", String(busy));
   };
 
-  const requestAction = async (url, body, label) => {
+  const requestAction = async (url, body, label, options = {}) => {
+    const shouldReload = options.reload !== false;
     showLoading(label);
     let navigating = false;
     try {
@@ -85,10 +86,15 @@
       });
       if (response.type === "opaqueredirect" || response.status === 0 ||
           (response.status >= 300 && response.status < 400) || response.ok) {
-        navigating = true;
-        showLoadingSuccess("Success. Refreshing...");
-        await new Promise((resolve) => window.setTimeout(resolve, 450));
-        window.location.reload();
+        showLoadingSuccess(shouldReload ? "Success. Refreshing..." : "Saved");
+        await new Promise((resolve) => window.setTimeout(resolve, shouldReload ? 300 : 180));
+        if (shouldReload) {
+          navigating = true;
+          window.location.reload();
+        } else {
+          hideLoading();
+          showToast(options.successMessage || "Changes saved.");
+        }
         return true;
       }
       const documentText = await response.text();
@@ -140,6 +146,39 @@
   const dashboard = document.querySelector("[data-guild-id]");
   if (!dashboard) return;
 
+  const editorStateKey = `playlist-editor:${window.location.pathname}`;
+  const restoreEditorState = () => {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(editorStateKey) || "null");
+      if (!saved) return;
+      document.querySelectorAll("[data-playlist-entry]").forEach((entry) => {
+        if (saved.openPlaylists.includes(entry.dataset.playlistName)) {
+          const details = entry.querySelector("details");
+          if (details) details.open = true;
+        }
+      });
+      window.requestAnimationFrame(() => window.scrollTo(0, saved.scrollY));
+    } catch {
+      // Ignore stale browser state.
+    } finally {
+      sessionStorage.removeItem(editorStateKey);
+    }
+  };
+  const saveEditorState = (form) => {
+    if (!form.closest("[data-playlist-entry]") || form.action.endsWith("/playlists/delete")) return false;
+    const entry = form.closest("[data-playlist-entry]");
+    const currentName = entry.dataset.playlistName;
+    const renamedTo = form.action.endsWith("/playlists/rename")
+      ? form.querySelector('input[name="new_name"]')?.value.trim()
+      : null;
+    const openPlaylists = [...document.querySelectorAll("[data-playlist-entry]")]
+      .filter((entry) => entry.querySelector("details")?.open)
+      .map((item) => item.dataset.playlistName === currentName && renamedTo ? renamedTo : item.dataset.playlistName);
+    sessionStorage.setItem(editorStateKey, JSON.stringify({ openPlaylists, scrollY: window.scrollY }));
+    return true;
+  };
+  restoreEditorState();
+
   const playlistDialog = document.querySelector("[data-playlist-dialog]");
   document.querySelector("[data-open-playlist-dialog]")?.addEventListener("click", () => playlistDialog?.showModal());
   document.querySelector("[data-close-playlist-dialog]")?.addEventListener("click", () => playlistDialog?.close());
@@ -183,9 +222,32 @@
       event.preventDefault();
       const body = new URLSearchParams(new FormData(form));
       if (submitter?.name) body.set(submitter.name, submitter.value);
+      const inlineTrackAction = form.action.endsWith("/playlists/track") &&
+        ["up", "down", "remove"].includes(action);
+      const editorStateSaved = inlineTrackAction ? false : saveEditorState(form);
       setButtonBusy(submitter, true);
       try {
-        await requestAction(form.action, body, submitter?.textContent?.trim() || "Saving changes...");
+        const succeeded = await requestAction(
+          form.action,
+          body,
+          submitter?.textContent?.trim() || "Saving changes...",
+          inlineTrackAction ? { reload: false, successMessage: "Playlist updated." } : {},
+        );
+        if (!succeeded && editorStateSaved) sessionStorage.removeItem(editorStateKey);
+        if (succeeded && inlineTrackAction) {
+          const item = form.closest("[data-playlist-track]");
+          const list = item?.parentElement;
+          if (!item || !list) return;
+          if (action === "up") item.previousElementSibling?.before(item);
+          if (action === "down") item.nextElementSibling?.after(item);
+          if (action === "remove") item.remove();
+          refreshTrackPositions(list);
+          const entry = list.closest("[data-playlist-entry]");
+          const count = list.querySelectorAll("[data-playlist-track]").length;
+          const countLabel = entry?.querySelector(".playlist-heading > div:first-child span");
+          if (countLabel) countLabel.textContent = `${count} tracks`;
+          if (count === 0) list.innerHTML = '<li class="empty-row">Playlist is empty. Add the first track above.</li>';
+        }
       } finally {
         setButtonBusy(submitter, false);
       }
@@ -193,6 +255,21 @@
   });
 
   let draggedTrack = null;
+  const refreshTrackPositions = (list) => {
+    const rows = [...list.querySelectorAll("[data-playlist-track]")];
+    rows.forEach((item, index) => {
+      const position = index + 1;
+      item.dataset.position = position;
+      const number = item.querySelector(":scope > span");
+      const input = item.querySelector('input[name="position"]');
+      const up = item.querySelector('button[value="up"]');
+      const down = item.querySelector('button[value="down"]');
+      if (number) number.textContent = position;
+      if (input) input.value = position;
+      if (up) up.disabled = index === 0;
+      if (down) down.disabled = index === rows.length - 1;
+    });
+  };
   document.querySelectorAll("[data-playlist-track]").forEach((row) => {
     row.addEventListener("dragstart", () => {
       draggedTrack = row;
@@ -208,14 +285,26 @@
     row.addEventListener("drop", async (event) => {
       event.preventDefault();
       if (!draggedTrack || draggedTrack.parentElement !== row.parentElement || draggedTrack === row) return;
+      const source = draggedTrack;
+      const target = row;
+      const list = source.parentElement;
+      const fromPosition = Number(source.dataset.position);
+      const toPosition = Number(target.dataset.position);
       const body = new URLSearchParams({
-        csrf: draggedTrack.dataset.csrf,
-        name: draggedTrack.dataset.playlistName,
-        position: draggedTrack.dataset.position,
-        to_position: row.dataset.position,
+        csrf: source.dataset.csrf,
+        name: source.dataset.playlistName,
+        position: source.dataset.position,
+        to_position: target.dataset.position,
         action: "move",
       });
-      await requestAction(draggedTrack.dataset.actionUrl, body, "Reordering playlist...");
+      const succeeded = await requestAction(source.dataset.actionUrl, body, "Reordering playlist...", {
+        reload: false,
+        successMessage: "Playlist order updated.",
+      });
+      if (!succeeded) return;
+      if (fromPosition < toPosition) target.after(source);
+      else target.before(source);
+      refreshTrackPositions(list);
     });
   });
 

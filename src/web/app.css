@@ -34,7 +34,7 @@ body > main { flex: 1 0 auto; }
 
 a { color: inherit; }
 
-button, input, textarea { font: inherit; }
+button, input, select, textarea { font: inherit; }
 
 .site-nav {
   position: sticky;
@@ -422,6 +422,7 @@ input[type="text"],
 input[type="url"],
 input[type="search"],
 input:not([type]),
+select,
 textarea {
   display: block;
   width: 100%;
@@ -433,6 +434,9 @@ textarea {
   background: #0d1113;
   color: var(--text);
 }
+
+select { color-scheme: dark; cursor: pointer; }
+select option { background: #0d1113; color: var(--text); }
 
 .library-panel {
   padding: 36px 0 42px;
@@ -607,7 +611,7 @@ button.is-loading::before { content: ""; display: inline-block; width: 13px; hei
 
 .text-button.danger:hover { color: var(--coral); }
 
-input:focus, textarea:focus { border-color: var(--focus); box-shadow: 0 0 0 2px rgba(248, 214, 109, .16); }
+input:focus, select:focus, textarea:focus { border-color: var(--focus); box-shadow: 0 0 0 2px rgba(248, 214, 109, .16); }
 
 .toggle-row { grid-column: 2; display: flex; flex-wrap: wrap; gap: 22px; margin-top: 18px; }
 .toggle-row label, .check-list label { display: flex; align-items: center; gap: 9px; color: var(--text); }

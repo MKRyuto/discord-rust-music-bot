@@ -5,7 +5,7 @@
 <p><strong>A production-minded Discord music bot with consistent audio, persistent queues, and a per-server web dashboard.</strong></p>
 
 <p>
-  <a href="https://github.com/MKRyuto/discord-rust-music-bot/releases"><img src="https://img.shields.io/badge/release-v2.2.0-42d3b2?style=flat-square" alt="Release v2.2.0"></a>
+  <a href="https://github.com/MKRyuto/discord-rust-music-bot/releases"><img src="https://img.shields.io/badge/release-v2.2.1-42d3b2?style=flat-square" alt="Release v2.2.1"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rustc-1.96.0-ff806f?style=flat-square&logo=rust&logoColor=white" alt="rustc 1.96.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/MKRyuto/discord-rust-music-bot?style=flat-square&color=f8d66d" alt="MIT License"></a>
   <a href="https://github.com/MKRyuto/discord-rust-music-bot/stargazers"><img src="https://img.shields.io/github/stars/MKRyuto/discord-rust-music-bot?style=flat-square&logo=github" alt="GitHub Stars"></a>

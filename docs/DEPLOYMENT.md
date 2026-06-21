@@ -249,7 +249,7 @@ winget upgrade yt-dlp.yt-dlp
 
 | Component | Version |
 | --- | --- |
-| Application | `2.2.0` |
+| Application | `2.2.1` |
 | Rust | `1.96.0` |
 | FFmpeg | `8.1.1` |
 | yt-dlp | `2026.06.09` |
