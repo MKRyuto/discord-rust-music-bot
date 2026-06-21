@@ -126,6 +126,8 @@ SESSION_SECRET=replace_with_a_long_random_secret_at_least_32_chars
 
 Keep `SESSION_SECRET` stable across deployments. Rotating it invalidates existing web sessions.
 
+`DISCORD_CLIENT_ID` must be the Application ID that owns `DISCORD_TOKEN`. The bot rejects dashboard startup when they differ, and the invite route always uses the identity of the bot that is actually connected.
+
 ## Running
 
 Development:
@@ -199,6 +201,14 @@ DJ roles control protected commands inside Discord. A DJ role alone does not gra
 - Join a voice channel before running `/play`.
 - Run `ffmpeg -version` and `yt-dlp --version` from the same environment as the bot.
 - Check logs for track preparation or Songbird errors.
+
+If joining fails with `gateway response from Discord timed out`:
+
+- Check channel-specific permission overrides for the bot role, especially `Connect` and `Speak`.
+- Make sure the voice channel is not restricted to another role.
+- Move the user to a normal voice channel instead of a locked or full channel.
+- Kick and invite the bot again if Discord retained stale voice state.
+- The bot clears stale Songbird state and retries once automatically before returning an error.
 
 ### Slash commands do not appear
 

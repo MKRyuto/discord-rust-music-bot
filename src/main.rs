@@ -88,6 +88,16 @@ async fn main() -> Result<(), Error> {
                 Ok(())
             })
         },
+        pre_command: |ctx| {
+            Box::pin(async move {
+                tracing::info!(
+                    command = %ctx.command().qualified_name,
+                    guild_id = ?ctx.guild_id(),
+                    "handling Discord command"
+                );
+            })
+        },
+        on_error: |error| Box::pin(handle_framework_error(error)),
         ..Default::default()
     };
 
@@ -144,12 +154,44 @@ async fn main() -> Result<(), Error> {
 
     let mut client = ClientBuilder::new(token, intents)
         .framework(framework)
-        .register_songbird()
+        .register_songbird_from_config(
+            songbird::Config::default()
+                .gateway_timeout(Some(Duration::from_secs(20)))
+                .driver_timeout(Some(Duration::from_secs(20))),
+        )
         .await?;
 
     client.start().await?;
 
     Ok(())
+}
+
+async fn handle_framework_error(error: poise::FrameworkError<'_, Data, Error>) {
+    match &error {
+        poise::FrameworkError::Command { ctx, error, .. } => tracing::error!(
+            command = %ctx.command().qualified_name,
+            guild_id = ?ctx.guild_id(),
+            %error,
+            "Discord command failed"
+        ),
+        poise::FrameworkError::Setup { error, .. } => {
+            tracing::error!(%error, "Discord framework setup failed");
+        }
+        poise::FrameworkError::EventHandler { error, event, .. } => tracing::error!(
+            event = event.snake_case_name(),
+            %error,
+            "Discord event handler failed"
+        ),
+        poise::FrameworkError::CommandPanic { ctx, .. } => tracing::error!(
+            command = %ctx.command().qualified_name,
+            guild_id = ?ctx.guild_id(),
+            "Discord command panicked"
+        ),
+        _ => tracing::error!("Discord framework rejected an interaction"),
+    }
+    if let Err(send_error) = poise::builtins::on_error(error).await {
+        tracing::error!(?send_error, "failed to send Discord error response");
+    }
 }
 
 fn spawn_database_backups(db: Arc<Database>) {

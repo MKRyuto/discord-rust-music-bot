@@ -512,14 +512,77 @@ pub async fn join_user_channel(
     let channel_id =
         user_voice_channel(ctx, guild_id, user_id).ok_or("Lu harus join voice channel dulu.")?;
 
+    ensure_voice_permissions(ctx, guild_id, channel_id).await?;
+
     let manager = songbird::get(ctx)
         .await
         .ok_or("Songbird voice client belum terpasang.")?
         .clone();
 
-    let _handler_lock = manager.join(guild_id, channel_id).await?;
+    match manager.join(guild_id, channel_id).await {
+        Ok(_handler_lock) => {}
+        Err(error) if error.should_leave_server() => {
+            tracing::warn!(%guild_id, %channel_id, "Discord voice gateway timed out; retrying join");
+            if let Err(remove_error) = manager.remove(guild_id).await {
+                tracing::warn!(?remove_error, %guild_id, "failed to clear stale voice state");
+            }
+            tokio::time::sleep(Duration::from_millis(750)).await;
+            manager.join(guild_id, channel_id).await.map_err(|retry_error| {
+                if retry_error.should_leave_server() {
+                    "Discord voice gateway tidak merespons setelah retry. Pastikan bot diizinkan Connect dan Speak, voice channel tidak dibatasi, lalu coba kick dan invite ulang bot."
+                        .to_string()
+                } else {
+                    format!("Gagal join voice channel setelah retry: {retry_error}")
+                }
+            })?;
+        }
+        Err(error) => return Err(format!("Gagal join voice channel: {error}").into()),
+    }
 
     Ok(channel_id)
+}
+
+async fn ensure_voice_permissions(
+    ctx: &serenity::Context,
+    guild_id: serenity::GuildId,
+    channel_id: serenity::ChannelId,
+) -> Result<(), Error> {
+    let bot_id = ctx.cache.current_user().id;
+    let member = guild_id
+        .member(ctx, bot_id)
+        .await
+        .map_err(|error| format!("Gagal memeriksa permission bot di server: {error}"))?;
+    let permissions = {
+        let guild = guild_id
+            .to_guild_cached(ctx)
+            .ok_or("Data server belum tersedia di cache. Coba lagi beberapa detik.")?;
+        let channel = guild
+            .channels
+            .get(&channel_id)
+            .ok_or("Voice channel tidak ditemukan di cache Discord.")?;
+        guild.user_permissions_in(channel, &member)
+    };
+    let missing = missing_voice_permissions(permissions);
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Bot tidak punya permission {} di voice channel ini. Periksa role bot dan channel permission overrides.",
+            missing.join(" dan ")
+        )
+        .into())
+    }
+}
+
+fn missing_voice_permissions(permissions: serenity::Permissions) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if !permissions.contains(serenity::Permissions::CONNECT) {
+        missing.push("Connect");
+    }
+    if !permissions.contains(serenity::Permissions::SPEAK) {
+        missing.push("Speak");
+    }
+    missing
 }
 
 /// Ambil metadata sederhana dari query/url.
@@ -1283,4 +1346,25 @@ pub async fn leave(
     let _ = manager.remove(guild_id).await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn voice_permission_diagnostics_are_specific() {
+        assert_eq!(
+            missing_voice_permissions(serenity::Permissions::empty()),
+            vec!["Connect", "Speak"]
+        );
+        assert_eq!(
+            missing_voice_permissions(serenity::Permissions::CONNECT),
+            vec!["Speak"]
+        );
+        assert!(missing_voice_permissions(
+            serenity::Permissions::CONNECT | serenity::Permissions::SPEAK
+        )
+        .is_empty());
+    }
 }

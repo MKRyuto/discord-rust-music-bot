@@ -99,6 +99,11 @@ impl WebConfig {
             .trim_end_matches('/')
             .to_string();
         let client_id = env::var("DISCORD_CLIENT_ID").unwrap_or_else(|_| bot_id.to_string());
+        if bot_id != "0" && client_id != bot_id {
+            return Err("DISCORD_CLIENT_ID does not match the connected bot application. Use the Application ID that owns DISCORD_TOKEN."
+                .to_string()
+                .into());
+        }
         let client_secret = env::var("DISCORD_CLIENT_SECRET")
             .ok()
             .filter(|value| !value.trim().is_empty());
@@ -636,7 +641,7 @@ fn signal_bars() -> String {
 
 async fn invite(State(state): State<WebState>, Query(query): Query<InviteQuery>) -> Redirect {
     let mut params = vec![
-        ("client_id", state.config.client_id.as_str()),
+        ("client_id", state.bot.id.as_str()),
         ("permissions", ""),
         ("scope", "bot applications.commands"),
         ("integration_type", "0"),
