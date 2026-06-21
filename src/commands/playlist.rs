@@ -152,11 +152,6 @@ pub async fn load(
         return Ok(());
     }
 
-    let tracks = apply_user_queue_limit(ctx, guild_id, user_id, tracks, mode).await?;
-    if tracks.is_empty() {
-        return Ok(());
-    }
-
     if let Err(err) = player::join_user_channel(ctx.serenity_context(), guild_id, user_id).await {
         ctx.say(format!("Gagal join voice channel: {err}"))
             .await
@@ -240,14 +235,28 @@ pub async fn fetch_youtube_playlist(
     url: String,
     requested_by: serenity::UserId,
 ) -> Result<Vec<Track>, Error> {
+    Ok(fetch_youtube_playlist_details(url, requested_by)
+        .await?
+        .tracks)
+}
+
+pub struct YoutubePlaylistDetails {
+    pub title: Option<String>,
+    pub tracks: Vec<Track>,
+}
+
+pub async fn fetch_youtube_playlist_details(
+    url: String,
+    requested_by: serenity::UserId,
+) -> Result<YoutubePlaylistDetails, Error> {
     validate_youtube_playlist_url(&url)?;
-    let tracks = tokio::time::timeout(
+    let task_result = tokio::time::timeout(
         Duration::from_secs(45),
-        tokio::task::spawn_blocking(move || import_youtube_tracks(&url, requested_by)),
+        tokio::task::spawn_blocking(move || import_youtube_playlist(&url, requested_by)),
     )
     .await
-    .map_err(|_| "Import playlist timeout setelah 45 detik.")??;
-    tracks
+    .map_err(|_| "Import playlist timeout setelah 45 detik.")?;
+    task_result.map_err(|error| -> Error { Box::new(error) })?
 }
 
 /// Lihat semua saved playlist.
@@ -365,6 +374,10 @@ fn normalize_name(name: &str) -> Result<String, Error> {
     Ok(name.to_string())
 }
 
+pub fn is_youtube_playlist_url(raw: &str) -> bool {
+    validate_youtube_playlist_url(raw).is_ok()
+}
+
 fn validate_youtube_playlist_url(raw: &str) -> Result<(), Error> {
     let parsed = url::Url::parse(raw.trim()).map_err(|_| "URL playlist tidak valid.")?;
     let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
@@ -383,13 +396,16 @@ fn validate_youtube_playlist_url(raw: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn import_youtube_tracks(url: &str, requested_by: serenity::UserId) -> Result<Vec<Track>, Error> {
+fn import_youtube_playlist(
+    url: &str,
+    requested_by: serenity::UserId,
+) -> Result<YoutubePlaylistDetails, Error> {
     let output = Command::new("yt-dlp")
         .args([
             "--flat-playlist",
             "--playlist-end",
             "100",
-            "--dump-json",
+            "--dump-single-json",
             "--skip-download",
             "--no-warnings",
             url,
@@ -402,13 +418,47 @@ fn import_youtube_tracks(url: &str, requested_by: serenity::UserId) -> Result<Ve
         return Err(format!("yt-dlp gagal import playlist: {}", stderr.trim()).into());
     }
 
-    let tracks = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter_map(|item| youtube_item_to_track(&item, requested_by))
+    let payload = serde_json::from_slice::<Value>(&output.stdout)
+        .map_err(|error| format!("Output playlist yt-dlp tidak valid: {error}"))?;
+    let title = payload
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_string);
+    let tracks = payload
+        .get("entries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| youtube_item_to_track(item, requested_by))
         .collect::<Vec<_>>();
 
-    Ok(tracks)
+    Ok(YoutubePlaylistDetails { title, tracks })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_youtube_playlist_url;
+
+    #[test]
+    fn detects_supported_youtube_playlist_urls() {
+        assert!(is_youtube_playlist_url(
+            "https://www.youtube.com/playlist?list=PL123"
+        ));
+        assert!(is_youtube_playlist_url(
+            "https://www.youtube.com/watch?v=abc&list=PL123"
+        ));
+        assert!(is_youtube_playlist_url(
+            "https://music.youtube.com/watch?v=abc&list=PL123"
+        ));
+        assert!(!is_youtube_playlist_url(
+            "https://www.youtube.com/watch?v=abc"
+        ));
+        assert!(!is_youtube_playlist_url(
+            "https://example.com/playlist?list=PL123"
+        ));
+    }
 }
 
 fn youtube_item_to_track(item: &Value, requested_by: serenity::UserId) -> Option<Track> {
@@ -461,31 +511,6 @@ impl LoadMode {
             _ => Err("Mode playlist harus `append`, `replace`, atau `playnow`.".into()),
         }
     }
-}
-
-async fn apply_user_queue_limit(
-    ctx: Ctx<'_>,
-    guild_id: serenity::GuildId,
-    user_id: serenity::UserId,
-    tracks: Vec<Track>,
-    mode: LoadMode,
-) -> Result<Vec<Track>, Error> {
-    if mode == LoadMode::Replace {
-        return Ok(tracks);
-    }
-
-    let max_queue_per_user = ctx.data().db.max_queue_per_user(guild_id)?;
-    let queued_by_user = player::user_queue_count(ctx.data(), guild_id, user_id).await;
-    let remaining_slots = max_queue_per_user.saturating_sub(queued_by_user);
-    if remaining_slots == 0 {
-        ctx.say(format!(
-            "Queue lu sudah mencapai batas `{max_queue_per_user}` lagu. Hapus beberapa dulu sebelum load playlist."
-        ))
-        .await?;
-        return Ok(Vec::new());
-    }
-
-    Ok(tracks.into_iter().take(remaining_slots).collect())
 }
 
 async fn load_tracks_into_state(

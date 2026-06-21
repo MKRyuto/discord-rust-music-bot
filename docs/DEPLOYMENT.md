@@ -94,6 +94,8 @@ WEB_PREVIEW=false
 WEB_BIND=127.0.0.1:3000
 PUBLIC_BASE_URL=http://127.0.0.1:3000
 PUBLIC_CONTACT_EMAIL=operator@example.com
+WEB_ADMIN_USER_IDS=123456789012345678
+FEEDBACK_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/your_id/your_token
 
 DISCORD_CLIENT_ID=your_application_id
 DISCORD_CLIENT_SECRET=your_oauth_client_secret
@@ -121,6 +123,8 @@ SESSION_SECRET=replace_with_a_long_random_secret_at_least_32_chars
 | `WEB_BIND` | No | HTTP bind address; defaults to `127.0.0.1:3000`. |
 | `PUBLIC_BASE_URL` | Dashboard | Public origin used for cookies and callback defaults. |
 | `PUBLIC_CONTACT_EMAIL` | Recommended | Operator contact shown in Privacy and Terms pages. |
+| `WEB_ADMIN_USER_IDS` | Recommended | Comma-separated Discord user IDs allowed to read the feedback inbox. |
+| `FEEDBACK_DISCORD_WEBHOOK_URL` | No | Discord webhook notified when authenticated users submit feedback. |
 | `BOT_DISPLAY_NAME` | Preview only | Bot name used in preview mode. |
 | `BOT_AVATAR_URL` | Preview only | Bot avatar used in preview mode. |
 
@@ -173,7 +177,7 @@ The bot uses SQLite WAL mode, waits up to five seconds for busy writes, and crea
 
 ## Web Access Model
 
-Public routes such as `/`, `/docs`, `/invite`, `/privacy`, and `/terms` are available to regular users. The server list and every `/dashboard/:guild_id` control require Discord OAuth and are shown only to the server owner or a member with `Administrator` or `Manage Server`.
+Public routes such as `/`, `/docs`, `/invite`, `/feedback`, `/privacy`, and `/terms` are available to regular users. Submitting feedback requires login. The server list and every `/dashboard/:guild_id` control require Discord OAuth and are shown only to the server owner or a member with `Administrator` or `Manage Server`. `/admin/feedback` is restricted separately through `WEB_ADMIN_USER_IDS`.
 
 DJ roles control protected commands inside Discord. A DJ role alone does not grant web dashboard administration.
 
@@ -184,12 +188,17 @@ DJ roles control protected commands inside Discord. A DJ role alone does not gra
 - [ ] Serve the dashboard only through HTTPS.
 - [ ] Match the production OAuth callback exactly in Discord and `.env`.
 - [ ] Set `PUBLIC_CONTACT_EMAIL` for support and deletion requests.
+- [ ] Set `WEB_ADMIN_USER_IDS` and verify a non-operator receives `403` from `/admin/feedback`.
+- [ ] Test the optional feedback webhook, then resolve, reopen, filter, and delete a test report.
 - [ ] Keep `WEB_PREVIEW=false`.
 - [ ] Restrict filesystem access to `.env` and the SQLite database.
 - [ ] Configure automated database backups.
 - [ ] Put `MUSIC_DB_BACKUP_DIR` on persistent storage and verify a backup can be restored.
 - [ ] Test login, logout, session restoration, and OAuth refresh.
 - [ ] Test play, pause, skip, previous, queue changes, and playlist playback in a real voice channel.
+- [ ] Import and play a 100-track YouTube playlist; confirm queue and player panels stay synchronized.
+- [ ] Run repeated skip/current-track failure tests and confirm no track starts twice.
+- [ ] Test two guilds concurrently to confirm their queue, settings, and panels remain isolated.
 - [ ] Check `/privacy`, `/terms`, `/docs`, and `/healthz` from the public domain.
 - [ ] Run format, Clippy, tests, and a release build.
 
@@ -240,7 +249,7 @@ winget upgrade yt-dlp.yt-dlp
 
 | Component | Version |
 | --- | --- |
-| Application | `2.0.0` |
+| Application | `2.2.0` |
 | Rust | `1.96.0` |
 | FFmpeg | `8.1.1` |
 | yt-dlp | `2026.06.09` |

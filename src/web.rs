@@ -27,7 +27,11 @@ use tokio_stream::{wrappers::IntervalStream, StreamExt};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
-use crate::{music::player, Data, Error};
+use crate::{
+    music::player,
+    ui::{player_panel, queue_panel},
+    Data, Error,
+};
 
 mod docs;
 
@@ -79,6 +83,8 @@ struct WebConfig {
     secure_cookie: bool,
     invite_permissions: u64,
     contact_email: Option<String>,
+    admin_user_ids: HashSet<u64>,
+    feedback_webhook_url: Option<String>,
     session_secret: String,
 }
 
@@ -121,6 +127,14 @@ impl WebConfig {
         let contact_email = env::var("PUBLIC_CONTACT_EMAIL")
             .ok()
             .filter(|value| !value.trim().is_empty());
+        let admin_user_ids = env::var("WEB_ADMIN_USER_IDS")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|value| value.trim().parse::<u64>().ok())
+            .collect();
+        let feedback_webhook_url = env::var("FEEDBACK_DISCORD_WEBHOOK_URL")
+            .ok()
+            .filter(|value| is_discord_webhook_url(value));
         let session_secret = env::var("SESSION_SECRET")
             .ok()
             .filter(|value| value.chars().count() >= 32)
@@ -140,6 +154,8 @@ impl WebConfig {
             secure_cookie,
             invite_permissions,
             contact_email,
+            admin_user_ids,
+            feedback_webhook_url,
             session_secret,
         }))
     }
@@ -308,11 +324,25 @@ impl WebError {
 
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
+        let actions = match self.status {
+            StatusCode::UNAUTHORIZED => {
+                "<a class=\"button primary\" href=\"/auth/login\">Login with Discord</a><a class=\"button secondary\" href=\"/\">Home</a>"
+            }
+            StatusCode::FORBIDDEN => {
+                "<a class=\"button primary\" href=\"/dashboard\">Back to servers</a><a class=\"button secondary\" href=\"/feedback\">Report a problem</a>"
+            }
+            StatusCode::TOO_MANY_REQUESTS => {
+                "<a class=\"button primary\" href=\"/dashboard\">Try again later</a><a class=\"button secondary\" href=\"/\">Home</a>"
+            }
+            _ => {
+                "<a class=\"button primary\" href=\"\">Retry</a><a class=\"button secondary\" href=\"/\">Home</a>"
+            }
+        };
         let body = page(
             "Dashboard error",
             "",
             &format!(
-                "<main class=\"error-page\"><p class=\"eyebrow\">{}</p><h1>Request tidak bisa diproses</h1><p>{}</p><a class=\"button primary\" href=\"/\">Kembali ke home</a></main>",
+                "<main class=\"error-page\"><p class=\"eyebrow\">Error {}</p><h1>Request tidak bisa diproses</h1><p>{}</p><div class=\"actions\">{actions}</div></main>",
                 self.status.as_u16(),
                 escape(&self.message)
             ),
@@ -374,6 +404,9 @@ pub fn spawn(
             .route("/privacy", get(privacy))
             .route("/terms", get(terms))
             .route("/docs", get(documentation))
+            .route("/feedback", get(feedback).post(submit_feedback))
+            .route("/admin/feedback", get(feedback_inbox))
+            .route("/admin/feedback/action", post(feedback_action))
             .route("/invite", get(invite))
             .route("/auth/login", get(login))
             .route("/auth/callback", get(callback))
@@ -554,11 +587,244 @@ async fn documentation(State(state): State<WebState>, headers: HeaderMap) -> Htm
     ))
 }
 
+async fn feedback(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let session = session_snapshot(&state, &headers).await;
+    let user = session.as_ref().and_then(|session| session.user.as_ref());
+    let notice = query.get("notice").map_or_else(String::new, |message| {
+        format!(
+            "<div class=\"toast\" role=\"status\" data-toast>{}<button type=\"button\" aria-label=\"Dismiss\" data-dismiss-toast>Close</button></div>",
+            escape(message)
+        )
+    });
+    let form = session.as_ref().and_then(|session| {
+        session.user.as_ref().map(|_| {
+            format!(
+                "<form class=\"feedback-form\" method=\"post\" action=\"/feedback\" data-async-form><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Report type<select name=\"category\"><option value=\"bug\">Bug report</option><option value=\"feedback\">Feedback</option><option value=\"feature\">Feature request</option></select></label><label>Subject<input name=\"subject\" maxlength=\"100\" required></label><label>Details<textarea name=\"message\" rows=\"8\" maxlength=\"2000\" required placeholder=\"What happened, what did you expect, and how can we reproduce it?\"></textarea></label><p class=\"field-help\">Your Discord display name is attached so the operator can identify the report.</p><button class=\"button primary\" type=\"submit\">Send report</button></form>",
+                escape(&session.csrf_token)
+            )
+        })
+    }).unwrap_or_else(|| "<div class=\"empty-state\"><h2>Login required</h2><p>Login with Discord before sending feedback so reports are protected from spam.</p><a class=\"button primary\" href=\"/auth/login\">Login with Discord</a></div>".to_string());
+    let content = format!(
+        "{notice}<main class=\"shell narrow-page\"><header class=\"page-header\"><div><p class=\"eyebrow\">Support</p><h1>Feedback and bug reports</h1><p>Tell the operator what is broken or what would make the bot better.</p></div></header>{form}</main>"
+    );
+    Html(page(
+        "Feedback",
+        &nav(
+            &state,
+            user,
+            session.as_ref().map(|session| session.csrf_token.as_str()),
+        ),
+        &content,
+    ))
+}
+
+async fn submit_feedback(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Form(form): Form<HashMap<String, String>>,
+) -> WebResult<Response> {
+    let (_, session) = require_session(&state, &headers).await?;
+    verify_csrf(&session, &form)?;
+    let (user_id, user_name) = session_user(&session)?;
+    check_action_rate_limit(
+        &state,
+        &format!("feedback:{user_id}"),
+        3,
+        Duration::from_secs(60 * 60),
+    )
+    .await?;
+    let category = form.get("category").map(String::as_str).unwrap_or_default();
+    if !matches!(category, "bug" | "feedback" | "feature") {
+        return Err(WebError::new(
+            StatusCode::BAD_REQUEST,
+            "Jenis laporan tidak valid.",
+        ));
+    }
+    let subject = bounded_text(&form, "subject", 100, "Subject")?;
+    let message = bounded_text(&form, "message", 2_000, "Detail laporan")?;
+    state
+        .data
+        .db
+        .add_web_feedback(
+            serenity::UserId::new(user_id),
+            user_name,
+            category,
+            subject,
+            message,
+        )
+        .map_err(internal)?;
+    if let Some(webhook_url) = state.config.feedback_webhook_url.clone() {
+        let user_name = user_name.to_string();
+        let category = category.to_string();
+        let subject = subject.to_string();
+        let message = message.to_string();
+        tokio::spawn(async move {
+            if let Err(error) = send_feedback_webhook(
+                &webhook_url,
+                user_id,
+                &user_name,
+                &category,
+                &subject,
+                &message,
+            )
+            .await
+            {
+                tracing::warn!(%error, "failed to send feedback webhook");
+            }
+        });
+    }
+    tracing::info!(user_id, category, "web feedback submitted");
+    Ok(Redirect::to("/feedback?notice=Report+sent.+Thank+you!").into_response())
+}
+
+async fn feedback_inbox(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> WebResult<Html<String>> {
+    let (_, session) = require_session(&state, &headers).await?;
+    require_operator(&state, &session)?;
+    let status = query
+        .get("status")
+        .map(String::as_str)
+        .filter(|value| matches!(*value, "open" | "resolved"));
+    let category = query
+        .get("category")
+        .map(String::as_str)
+        .filter(|value| matches!(*value, "bug" | "feedback" | "feature"));
+    let page_number = query
+        .get("page")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1);
+    const PAGE_SIZE: usize = 20;
+    let total = state
+        .data
+        .db
+        .web_feedback_count(status, category)
+        .map_err(internal)?;
+    let total_pages = total.div_ceil(PAGE_SIZE).max(1);
+    let page_number = page_number.min(total_pages);
+    let reports = state
+        .data
+        .db
+        .web_feedback(status, category, PAGE_SIZE, (page_number - 1) * PAGE_SIZE)
+        .map_err(internal)?;
+    let rows = reports
+        .iter()
+        .map(|report| {
+            let status_action = if report.status == "resolved" {
+                ("reopen", "Reopen")
+            } else {
+                ("resolve", "Resolve")
+            };
+            format!(
+                "<article class=\"feedback-entry\"><header><div class=\"feedback-tags\"><span class=\"status-chip {}\">{}</span><span class=\"status-chip\">{}</span></div><time data-unix=\"{}\">{}</time></header><h2>{}</h2><p>{}</p><footer><span>#{} from {} (<code>{}</code>)</span><form method=\"post\" action=\"/admin/feedback/action\" data-async-form><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"id\" value=\"{}\"><button class=\"text-button\" name=\"action\" value=\"{}\">{}</button><button class=\"text-button danger\" name=\"action\" value=\"delete\" data-confirm=\"Delete this report permanently?\">Delete</button></form></footer></article>",
+                escape(&report.status),
+                escape(&report.status),
+                escape(&report.category),
+                report.created_at,
+                report.created_at,
+                escape(&report.subject),
+                escape(&report.message),
+                report.id,
+                escape(&report.user_name),
+                report.user_id,
+                escape(&session.csrf_token),
+                report.id,
+                status_action.0,
+                status_action.1,
+            )
+        })
+        .collect::<String>();
+    let status_value = status.unwrap_or("all");
+    let category_value = category.unwrap_or("all");
+    let previous = if page_number > 1 {
+        format!(
+            "<a class=\"button secondary compact\" href=\"/admin/feedback?status={status_value}&category={category_value}&page={}\">Previous</a>",
+            page_number - 1
+        )
+    } else {
+        String::new()
+    };
+    let next = if page_number < total_pages {
+        format!(
+            "<a class=\"button secondary compact\" href=\"/admin/feedback?status={status_value}&category={category_value}&page={}\">Next</a>",
+            page_number + 1
+        )
+    } else {
+        String::new()
+    };
+    let user = session.user.as_ref();
+    let content = format!(
+        "<main class=\"shell\"><header class=\"page-header\"><div><p class=\"eyebrow\">Operator</p><h1>Feedback inbox</h1><p>{total} reports match the current filters.</p></div></header><form class=\"feedback-filters\" method=\"get\" action=\"/admin/feedback\"><label>Status<select name=\"status\"><option value=\"all\" {}>All</option><option value=\"open\" {}>Open</option><option value=\"resolved\" {}>Resolved</option></select></label><label>Category<select name=\"category\"><option value=\"all\" {}>All</option><option value=\"bug\" {}>Bug</option><option value=\"feedback\" {}>Feedback</option><option value=\"feature\" {}>Feature request</option></select></label><button class=\"button secondary compact\" type=\"submit\">Apply filters</button></form><section class=\"feedback-list\">{}</section><nav class=\"pagination\">{previous}<span>Page {page_number} of {total_pages}</span>{next}</nav></main>",
+        selected(status_value == "all"),
+        selected(status_value == "open"),
+        selected(status_value == "resolved"),
+        selected(category_value == "all"),
+        selected(category_value == "bug"),
+        selected(category_value == "feedback"),
+        selected(category_value == "feature"),
+        if rows.is_empty() {
+            "<div class=\"empty-state\"><h2>No matching reports</h2><p>Try another status or category.</p></div>".to_string()
+        } else {
+            rows
+        }
+    );
+    Ok(Html(page(
+        "Feedback inbox",
+        &nav(&state, user, Some(&session.csrf_token)),
+        &content,
+    )))
+}
+
+async fn feedback_action(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Form(form): Form<HashMap<String, String>>,
+) -> WebResult<Response> {
+    let (_, session) = require_session(&state, &headers).await?;
+    require_operator(&state, &session)?;
+    verify_csrf(&session, &form)?;
+    let id = form_number::<i64>(&form, "id")?;
+    let changed = match form.get("action").map(String::as_str) {
+        Some("resolve") => state
+            .data
+            .db
+            .set_web_feedback_status(id, "resolved")
+            .map_err(internal)?,
+        Some("reopen") => state
+            .data
+            .db
+            .set_web_feedback_status(id, "open")
+            .map_err(internal)?,
+        Some("delete") => state.data.db.delete_web_feedback(id).map_err(internal)?,
+        _ => {
+            return Err(WebError::new(
+                StatusCode::BAD_REQUEST,
+                "Aksi feedback tidak valid.",
+            ));
+        }
+    };
+    if !changed {
+        return Err(WebError::new(
+            StatusCode::NOT_FOUND,
+            "Laporan tidak ditemukan.",
+        ));
+    }
+    tracing::info!(id, action = ?form.get("action"), "feedback updated");
+    Ok(Redirect::to("/admin/feedback").into_response())
+}
+
 async fn privacy(State(state): State<WebState>, headers: HeaderMap) -> Html<String> {
     let session = session_snapshot(&state, &headers).await;
     let user = session.as_ref().and_then(|session| session.user.as_ref());
     let content = format!(
-        "<main class=\"legal-page\"><header><p class=\"eyebrow\">Legal</p><h1>Privacy Policy</h1><p>Last updated for dashboard v{}.</p></header><section><h2>Data we process</h2><p>Discord OAuth provides your user ID, display name, avatar, and visible servers. Guild permissions are read so the dashboard only shows servers you can manage.</p></section><section><h2>Storage</h2><p>OAuth session payloads, including access and refresh tokens, are encrypted with AES-256-GCM before being stored in SQLite. The browser receives only an opaque HttpOnly session cookie. Sessions expire after seven days.</p><p>Per-server settings, playlists, queue state, blocklist terms, playback statistics, and an audit of dashboard changes are also stored in SQLite.</p></section><section><h2>How data is used</h2><p>Data is used only to operate the bot, authorize dashboard access, persist server settings, and display music statistics. This project does not sell personal data.</p></section><section><h2>Deletion and contact</h2><p>Server administrators can remove playlists and configuration through Discord or this dashboard. For complete deployment-level deletion, contact the operator. {}</p></section></main>",
+        "<main class=\"legal-page\"><header><p class=\"eyebrow\">Legal</p><h1>Privacy Policy</h1><p>Last updated for dashboard v{}.</p></header><section><h2>Data we process</h2><p>Discord OAuth provides your user ID, display name, avatar, and visible servers. Guild permissions are read so the dashboard only shows servers you can manage.</p></section><section><h2>Storage</h2><p>OAuth session payloads, including access and refresh tokens, are encrypted with AES-256-GCM before being stored in SQLite. The browser receives only an opaque HttpOnly session cookie. Sessions expire after seven days.</p><p>Per-server settings, playlists, queue state, blocklist terms, playback statistics, dashboard audit entries, and feedback submitted through the support form are also stored in SQLite.</p></section><section><h2>How data is used</h2><p>Data is used only to operate the bot, authorize dashboard access, persist server settings, display music statistics, and respond to feedback. This project does not sell personal data.</p></section><section><h2>Deletion and contact</h2><p>Server administrators can remove playlists and configuration through Discord or this dashboard. For complete deployment-level deletion, contact the operator. {}</p></section></main>",
         env!("CARGO_PKG_VERSION"),
         contact_line(&state.config)
     );
@@ -943,7 +1209,7 @@ async fn guild_dashboard(
         })
         .collect::<WebResult<String>>()?;
     let library_html = format!(
-        "<section id=\"playlists\" class=\"library-panel full\"><header><div><p class=\"eyebrow\">Library</p><h2>Saved playlists</h2><p>Buat playlist manual atau import sampai 100 track dari YouTube.</p></div><strong>{} playlists</strong></header><div class=\"library-tools\"><form class=\"create-playlist-form\" method=\"post\" action=\"/dashboard/{}/playlists/create\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>New playlist name<input name=\"name\" maxlength=\"64\" required></label><button class=\"button secondary\" type=\"submit\">Create empty playlist</button></form><form class=\"import-form\" method=\"post\" action=\"/dashboard/{}/playlists/import\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Playlist name<input name=\"name\" maxlength=\"64\" required></label><label>YouTube playlist URL<input name=\"url\" type=\"url\" required></label><label class=\"append-toggle\"><input name=\"append\" type=\"checkbox\"> Append if playlist exists</label><button class=\"button secondary\" type=\"submit\">Import YouTube</button></form></div><ul class=\"playlist-list\">{}</ul></section>",
+        "<section id=\"playlists\" class=\"library-panel full\"><header><div><p class=\"eyebrow\">Library</p><h2>Saved playlists</h2><p>Buat playlist manual atau import sampai 100 track dari YouTube.</p></div><strong>{} playlists</strong></header><div class=\"library-toolbar\"><label>Search library<input type=\"search\" placeholder=\"Playlist or song title\" data-playlist-search></label><button class=\"button primary\" type=\"button\" data-open-playlist-dialog>New playlist</button></div><dialog class=\"playlist-dialog\" data-playlist-dialog><header><div><p class=\"eyebrow\">New playlist</p><h2>Create your library</h2></div><button class=\"dialog-close\" type=\"button\" data-close-playlist-dialog>Close</button></header><div class=\"dialog-tabs\"><button class=\"active\" type=\"button\" data-playlist-mode=\"empty\">Empty playlist</button><button type=\"button\" data-playlist-mode=\"youtube\">Import YouTube</button></div><form class=\"dialog-form\" data-playlist-panel=\"empty\" method=\"post\" action=\"/dashboard/{}/playlists/create\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Playlist name<input name=\"name\" maxlength=\"64\" required></label><button class=\"button primary\" type=\"submit\">Create playlist</button></form><form class=\"dialog-form\" data-playlist-panel=\"youtube\" method=\"post\" action=\"/dashboard/{}/playlists/import\" hidden><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Playlist name (optional)<input name=\"name\" maxlength=\"64\" placeholder=\"Uses the YouTube title when empty\"></label><label>YouTube playlist URL<input name=\"url\" type=\"url\" required></label><button class=\"button primary\" type=\"submit\">Import playlist</button></form></dialog><ul class=\"playlist-list\" data-playlist-list>{}</ul><p class=\"command-empty\" data-playlist-empty hidden>No playlist or song matches your search.</p></section>",
         playlists.len(),
         guild.id,
         escape(&session.csrf_token),
@@ -1163,17 +1429,20 @@ async fn import_guild_playlist(
         ));
     }
 
-    let name = form
+    let requested_name = form
         .get("name")
         .map(|value| value.trim())
-        .filter(|value| !value.is_empty() && value.chars().count() <= 64)
-        .ok_or_else(|| {
-            WebError::new(
-                StatusCode::BAD_REQUEST,
-                "Nama playlist wajib diisi dan maksimal 64 karakter.",
-            )
-        })?
-        .to_string();
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if requested_name
+        .as_ref()
+        .is_some_and(|name| name.chars().count() > 64)
+    {
+        return Err(WebError::new(
+            StatusCode::BAD_REQUEST,
+            "Nama playlist maksimal 64 karakter.",
+        ));
+    }
     let url = form
         .get("url")
         .map(|value| value.trim())
@@ -1186,9 +1455,14 @@ async fn import_guild_playlist(
         .and_then(|user| user.id.parse::<u64>().ok())
         .map(serenity::UserId::new)
         .ok_or_else(|| WebError::new(StatusCode::UNAUTHORIZED, "Discord user tidak valid."))?;
-    let tracks = crate::commands::playlist::fetch_youtube_playlist(url, user_id)
+    let details = crate::commands::playlist::fetch_youtube_playlist_details(url, user_id)
         .await
         .map_err(|error| WebError::new(StatusCode::BAD_REQUEST, error.to_string()))?;
+    let name = requested_name
+        .or_else(|| details.title.map(|title| clean_playlist_name(&title)))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "YouTube Playlist".to_string());
+    let tracks = details.tracks;
     if tracks.is_empty() {
         return Err(WebError::new(
             StatusCode::BAD_REQUEST,
@@ -1383,6 +1657,14 @@ async fn playlist_track_action(
                 user_id,
             )
             .map_err(internal)?,
+        "move" => {
+            let to_position = form_number::<usize>(&form, "to_position")?;
+            state
+                .data
+                .db
+                .move_playlist_track(guild_id, name, position, to_position, user_id)
+                .map_err(internal)?
+        }
         _ => {
             return Err(WebError::new(
                 StatusCode::BAD_REQUEST,
@@ -1590,6 +1872,14 @@ async fn player_action(
         "player.controlled",
         &format!("Player action: {action}"),
     )?;
+    if let Some(discord) = state.discord.as_deref() {
+        player_panel::update_player_message(discord, &state.data, guild_id)
+            .await
+            .ok();
+        queue_panel::update_queue_message(discord, &state.data, guild_id)
+            .await
+            .ok();
+    }
     Ok(notice_redirect(guild_id, "Player updated"))
 }
 
@@ -1646,6 +1936,14 @@ async fn queue_action(
         "queue.updated",
         &format!("Queue action: {action} at {position}"),
     )?;
+    if let Some(discord) = state.discord.as_deref() {
+        player_panel::update_player_message(discord, &state.data, guild_id)
+            .await
+            .ok();
+        queue_panel::update_queue_message(discord, &state.data, guild_id)
+            .await
+            .ok();
+    }
     Ok(notice_redirect(guild_id, "Queue updated"))
 }
 
@@ -1728,6 +2026,32 @@ fn playlist_name<'a>(form: &'a HashMap<String, String>, key: &str) -> WebResult<
         .ok_or_else(|| WebError::new(StatusCode::BAD_REQUEST, "Nama playlist tidak valid."))
 }
 
+fn bounded_text<'a>(
+    form: &'a HashMap<String, String>,
+    key: &str,
+    maximum: usize,
+    label: &str,
+) -> WebResult<&'a str> {
+    form.get(key)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty() && value.chars().count() <= maximum)
+        .ok_or_else(|| {
+            WebError::new(
+                StatusCode::BAD_REQUEST,
+                format!("{label} wajib diisi dan maksimal {maximum} karakter."),
+            )
+        })
+}
+
+fn clean_playlist_name(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(64)
+        .collect()
+}
+
 fn require_discord(state: &WebState) -> WebResult<&serenity::Context> {
     state.discord.as_deref().ok_or_else(|| {
         WebError::new(
@@ -1747,6 +2071,61 @@ fn session_user(session: &Session) -> WebResult<(u64, &str)> {
         .parse::<u64>()
         .map_err(|_| WebError::new(StatusCode::UNAUTHORIZED, "Discord user tidak valid."))?;
     Ok((id, user.display_name()))
+}
+
+fn require_operator(state: &WebState, session: &Session) -> WebResult<()> {
+    let (user_id, _) = session_user(session)?;
+    if state.config.admin_user_ids.contains(&user_id) {
+        Ok(())
+    } else {
+        Err(WebError::new(
+            StatusCode::FORBIDDEN,
+            "Halaman ini hanya untuk operator bot.",
+        ))
+    }
+}
+
+fn is_discord_webhook_url(value: &str) -> bool {
+    url::Url::parse(value.trim()).ok().is_some_and(|url| {
+        url.scheme() == "https"
+            && matches!(
+                url.host_str(),
+                Some("discord.com" | "www.discord.com" | "discordapp.com")
+            )
+            && url.path().starts_with("/api/webhooks/")
+    })
+}
+
+async fn send_feedback_webhook(
+    webhook_url: &str,
+    user_id: u64,
+    user_name: &str,
+    category: &str,
+    subject: &str,
+    message: &str,
+) -> Result<(), reqwest::Error> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()?;
+    client
+        .post(webhook_url)
+        .json(&serde_json::json!({
+            "username": "Music Bot Feedback",
+            "allowed_mentions": { "parse": [] },
+            "embeds": [{
+                "title": subject,
+                "description": message,
+                "color": 4_378_034,
+                "fields": [
+                    { "name": "Type", "value": category, "inline": true },
+                    { "name": "Reporter", "value": format!("{user_name} ({user_id})"), "inline": true }
+                ]
+            }]
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
 }
 
 fn audit_action(
@@ -2044,7 +2423,7 @@ fn managed_guild<'a>(session: &'a Session, guild_id: &str) -> WebResult<&'a OAut
         .ok_or_else(|| {
             WebError::new(
                 StatusCode::FORBIDDEN,
-                "Lu tidak punya permission Manage Server untuk guild ini.",
+                "Dashboard web hanya untuk owner, Administrator, atau Manage Server. Role DJ tetap bisa memakai kontrol player di Discord.",
             )
         })
 }
@@ -2126,7 +2505,9 @@ fn playlist_editor_item(
         .map(|(index, track)| {
             let position = index + 1;
             format!(
-                "<li><span>{position}</span><div><strong>{}</strong><small>{}</small></div><form class=\"playlist-track-actions\" method=\"post\" action=\"/dashboard/{guild_id}/playlists/track\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"name\" value=\"{}\"><input type=\"hidden\" name=\"position\" value=\"{position}\"><button name=\"action\" value=\"up\" {}>Up</button><button name=\"action\" value=\"down\" {}>Down</button><button class=\"danger\" name=\"action\" value=\"remove\">Remove</button></form></li>",
+                "<li draggable=\"true\" data-playlist-track data-position=\"{position}\" data-playlist-name=\"{}\" data-csrf=\"{}\" data-action-url=\"/dashboard/{guild_id}/playlists/track\"><span>{position}</span><div><strong>{}</strong><small>{}</small></div><form class=\"playlist-track-actions\" method=\"post\" action=\"/dashboard/{guild_id}/playlists/track\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"name\" value=\"{}\"><input type=\"hidden\" name=\"position\" value=\"{position}\"><button name=\"action\" value=\"up\" {}>Up</button><button name=\"action\" value=\"down\" {}>Down</button><button class=\"danger\" name=\"action\" value=\"remove\">Remove</button></form></li>",
+                escape(name),
+                escape(csrf),
                 escape(&track.title),
                 escape(&track.duration_label()),
                 escape(csrf),
@@ -2137,7 +2518,7 @@ fn playlist_editor_item(
         })
         .collect::<String>();
     format!(
-        "<li class=\"playlist-entry\"><div class=\"playlist-heading\"><div><strong>{}</strong><span>{} tracks</span></div><div class=\"playlist-actions\"><form method=\"post\" action=\"/dashboard/{guild_id}/playlists/play\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"name\" value=\"{}\"><button class=\"text-button\" type=\"submit\" {}>Play</button></form><form class=\"rename-form\" method=\"post\" action=\"/dashboard/{guild_id}/playlists/rename\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"old_name\" value=\"{}\"><input name=\"new_name\" value=\"{}\" maxlength=\"64\" aria-label=\"New playlist name\" required><button class=\"text-button\" type=\"submit\">Rename</button></form><form method=\"post\" action=\"/dashboard/{guild_id}/playlists/delete\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"name\" value=\"{}\"><button class=\"text-button danger\" type=\"submit\">Delete</button></form></div></div><details><summary>Edit tracks</summary><form class=\"add-track-form\" method=\"post\" action=\"/dashboard/{guild_id}/playlists/add-track\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"name\" value=\"{}\"><label>URL or search keyword<input name=\"query\" maxlength=\"200\" placeholder=\"YouTube URL or song title\" required></label><button class=\"button secondary compact\" type=\"submit\">Add track</button></form><ol class=\"playlist-tracks\">{}</ol></details></li>",
+        "<li class=\"playlist-entry\" data-playlist-entry><div class=\"playlist-heading\"><div><strong>{}</strong><span>{} tracks</span></div><div class=\"playlist-actions\"><form method=\"post\" action=\"/dashboard/{guild_id}/playlists/play\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"name\" value=\"{}\"><button class=\"text-button\" type=\"submit\" {}>Play</button></form><form class=\"rename-form\" method=\"post\" action=\"/dashboard/{guild_id}/playlists/rename\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"old_name\" value=\"{}\"><input name=\"new_name\" value=\"{}\" maxlength=\"64\" aria-label=\"New playlist name\" required><button class=\"text-button\" type=\"submit\">Rename</button></form><form method=\"post\" action=\"/dashboard/{guild_id}/playlists/delete\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"name\" value=\"{}\"><button class=\"text-button danger\" type=\"submit\">Delete</button></form></div></div><details><summary>Edit tracks</summary><div class=\"playlist-editor-tools\"><form class=\"add-track-form\" method=\"post\" action=\"/dashboard/{guild_id}/playlists/add-track\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"name\" value=\"{}\"><label>URL or search keyword<input name=\"query\" maxlength=\"200\" placeholder=\"YouTube URL or song title\" required></label><button class=\"button secondary compact\" type=\"submit\">Add track</button></form><form class=\"append-youtube-form\" method=\"post\" action=\"/dashboard/{guild_id}/playlists/import\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"name\" value=\"{}\"><input type=\"hidden\" name=\"append\" value=\"true\"><label>YouTube playlist URL<input name=\"url\" type=\"url\" required></label><button class=\"button secondary compact\" type=\"submit\">Add YouTube playlist</button></form></div><label class=\"track-search\">Search songs<input type=\"search\" placeholder=\"Song title\" data-track-search></label><ol class=\"playlist-tracks\" data-playlist-tracks>{}</ol></details></li>",
         escape(name),
         tracks.len(),
         escape(csrf),
@@ -2145,6 +2526,8 @@ fn playlist_editor_item(
         if tracks.is_empty() { "disabled" } else { "" },
         escape(csrf),
         escape(name),
+        escape(name),
+        escape(csrf),
         escape(name),
         escape(csrf),
         escape(name),
@@ -2161,6 +2544,14 @@ fn playlist_editor_item(
 fn checked(value: bool) -> &'static str {
     if value {
         "checked"
+    } else {
+        ""
+    }
+}
+
+fn selected(value: bool) -> &'static str {
+    if value {
+        "selected"
     } else {
         ""
     }
@@ -2229,13 +2620,20 @@ fn escape(value: &str) -> String {
 
 fn nav(state: &WebState, user: Option<&OAuthUser>, csrf: Option<&str>) -> String {
     let action = if let Some(user) = user {
+        let admin_link = user
+            .id
+            .parse::<u64>()
+            .ok()
+            .filter(|id| state.config.admin_user_ids.contains(id))
+            .map(|_| "<a href=\"/admin/feedback\">Inbox</a>")
+            .unwrap_or_default();
         format!(
-            "<a href=\"/docs\">Docs</a><a href=\"/dashboard\">Servers</a><form method=\"post\" action=\"/auth/logout\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button class=\"nav-button\" type=\"submit\">Logout {}</button></form>",
+            "<a href=\"/docs\">Docs</a><a href=\"/feedback\">Feedback</a><a href=\"/dashboard\">Servers</a>{admin_link}<form method=\"post\" action=\"/auth/logout\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button class=\"nav-button\" type=\"submit\">Logout {}</button></form>",
             escape(csrf.unwrap_or_default()),
             escape(user.display_name())
         )
     } else {
-        "<a href=\"/docs\">Docs</a><a class=\"login-link\" href=\"/auth/login\">Login</a>"
+        "<a href=\"/docs\">Docs</a><a href=\"/feedback\">Feedback</a><a class=\"login-link\" href=\"/auth/login\">Login</a>"
             .to_string()
     };
     format!(
@@ -2248,7 +2646,7 @@ fn nav(state: &WebState, user: Option<&OAuthUser>, csrf: Option<&str>) -> String
 
 fn page(title: &str, nav: &str, content: &str) -> String {
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"dark light\"><meta name=\"description\" content=\"Discord music bot dashboard with persistent queues, playlists, permissions, and loudness normalization.\"><title>{}</title><link rel=\"icon\" href=\"/favicon-v2.ico\"><link rel=\"stylesheet\" href=\"/assets/app.css\"><script src=\"/assets/app.js\" defer></script></head><body>{nav}{content}<footer><span>Discord Rust Music Bot v{}</span><nav><a href=\"/docs\">Docs</a><a href=\"/privacy\">Privacy</a><a href=\"/terms\">Terms</a></nav></footer></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"dark light\"><meta name=\"description\" content=\"Discord music bot dashboard with persistent queues, playlists, permissions, and loudness normalization.\"><title>{}</title><link rel=\"icon\" href=\"/favicon-v2.ico\"><link rel=\"stylesheet\" href=\"/assets/app.css\"><script src=\"/assets/app.js\" defer></script></head><body>{nav}{content}<footer><span>Discord Rust Music Bot v{}</span><nav><a href=\"/docs\">Docs</a><a href=\"/feedback\">Feedback</a><a href=\"/privacy\">Privacy</a><a href=\"/terms\">Terms</a></nav></footer></body></html>",
         escape(title),
         env!("CARGO_PKG_VERSION")
     )
@@ -2306,6 +2704,19 @@ mod tests {
     }
 
     #[test]
+    fn feedback_webhook_only_accepts_discord_https_urls() {
+        assert!(is_discord_webhook_url(
+            "https://discord.com/api/webhooks/123/token"
+        ));
+        assert!(!is_discord_webhook_url(
+            "http://discord.com/api/webhooks/123/token"
+        ));
+        assert!(!is_discord_webhook_url(
+            "https://example.com/api/webhooks/123/token"
+        ));
+    }
+
+    #[test]
     fn encrypted_session_round_trip() {
         let cipher = SessionCipher::new("test-session-secret-with-at-least-32-characters");
         let session = Session {
@@ -2341,5 +2752,27 @@ mod tests {
         assert!(html.contains("/dashboard/10/playlists/track"));
         assert!(html.contains("Example Track"));
         assert!(html.contains("value=\"remove\""));
+        assert!(html.contains("data-playlist-track"));
+        assert!(html.contains("draggable=\"true\""));
+        assert!(html.contains("Add YouTube playlist"));
+        assert!(html.contains("data-track-search"));
+    }
+
+    #[test]
+    fn playlist_auto_name_is_trimmed_sanitized_and_limited() {
+        assert_eq!(clean_playlist_name("  My\nPlaylist\0  "), "MyPlaylist");
+        assert_eq!(clean_playlist_name(&"x".repeat(80)).chars().count(), 64);
+    }
+
+    #[test]
+    fn bounded_feedback_text_rejects_empty_and_oversized_values() {
+        let valid = HashMap::from([("message".to_string(), " useful report ".to_string())]);
+        assert_eq!(
+            bounded_text(&valid, "message", 20, "Message").expect("valid text"),
+            "useful report"
+        );
+        assert!(bounded_text(&HashMap::new(), "message", 20, "Message").is_err());
+        let oversized = HashMap::from([("message".to_string(), "x".repeat(21))]);
+        assert!(bounded_text(&oversized, "message", 20, "Message").is_err());
     }
 }

@@ -48,7 +48,6 @@ pub struct GuildMusicState {
     pub previous_tracks: VecDeque<Track>,
     pub now_playing: Option<Track>,
     pub current_handle: Option<TrackHandle>,
-    pub suppress_next_end: bool,
     pub is_paused: bool,
     pub loop_mode: LoopMode,
     pub volume_percent: u8,
@@ -70,7 +69,6 @@ impl Default for GuildMusicState {
             previous_tracks: VecDeque::new(),
             now_playing: None,
             current_handle: None,
-            suppress_next_end: false,
             is_paused: false,
             loop_mode: LoopMode::Off,
             volume_percent: 100,
@@ -118,7 +116,6 @@ impl MusicStore {
         state.queue = queue;
         state.current_handle = None;
         state.is_paused = false;
-        state.suppress_next_end = false;
         state.queue_page = 0;
         state.skip_votes.clear();
         state.recent_play_requests.clear();

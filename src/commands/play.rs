@@ -6,7 +6,7 @@ use tokio::time::timeout;
 use crate::{
     music::{player, track::Track},
     permissions,
-    ui::player_panel,
+    ui::{player_panel, queue_panel},
     Ctx, Error,
 };
 
@@ -75,6 +75,53 @@ pub async fn play(
         ctx.say("Query atau URL itu masuk blocklist server.")
             .await
             .ok();
+        return Ok(());
+    }
+
+    if crate::commands::playlist::is_youtube_playlist_url(&query_or_url) {
+        if !permissions::require_music_control(ctx).await? {
+            return Ok(());
+        }
+        let details =
+            crate::commands::playlist::fetch_youtube_playlist_details(query_or_url, user_id)
+                .await?;
+        if details.tracks.is_empty() {
+            ctx.say("Playlist YouTube itu tidak punya track yang bisa diputar.")
+                .await?;
+            return Ok(());
+        }
+        if let Err(err) = player::join_user_channel(ctx.serenity_context(), guild_id, user_id).await
+        {
+            ctx.say(format!("Gagal join voice channel: {err}"))
+                .await
+                .ok();
+            return Ok(());
+        }
+        let imported = details.tracks.len();
+        {
+            let state_lock = ctx.data().music.get(guild_id).await;
+            let mut state = state_lock.lock().await;
+            state.queue.extend(details.tracks);
+            state.player_channel_id = Some(channel_id);
+        }
+        player::persist_queue(ctx.data(), guild_id).await;
+        player::start_if_idle(ctx.serenity_context(), ctx.data(), guild_id).await?;
+        player_panel::send_or_update_player_panel(
+            ctx.serenity_context(),
+            ctx.data(),
+            guild_id,
+            channel_id,
+        )
+        .await
+        .ok();
+        queue_panel::update_queue_message(ctx.serenity_context(), ctx.data(), guild_id)
+            .await
+            .ok();
+        ctx.say(format!(
+            "Added YouTube playlist **{}** with `{imported}` track(s).",
+            details.title.as_deref().unwrap_or("Untitled playlist")
+        ))
+        .await?;
         return Ok(());
     }
 

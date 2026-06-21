@@ -51,8 +51,123 @@
     filterCommands();
   }));
 
+  const loading = document.createElement("div");
+  loading.className = "action-loading";
+  loading.hidden = true;
+  loading.innerHTML = '<span class="loading-indicator"><span class="loading-spinner" aria-hidden="true"></span><span class="loading-check" aria-hidden="true">&#10003;</span></span><strong data-loading-label>Working...</strong>';
+  document.body.append(loading);
+  const showLoading = (label) => {
+    loading.classList.remove("success");
+    loading.querySelector("[data-loading-label]").textContent = label;
+    loading.hidden = false;
+  };
+  const showLoadingSuccess = (label = "Success") => {
+    loading.classList.add("success");
+    loading.querySelector("[data-loading-label]").textContent = label;
+  };
+  const hideLoading = () => { loading.hidden = true; };
+  const setButtonBusy = (button, busy) => {
+    if (!button) return;
+    button.disabled = busy;
+    button.classList.toggle("is-loading", busy);
+    button.setAttribute("aria-busy", String(busy));
+  };
+
+  const requestAction = async (url, body, label) => {
+    showLoading(label);
+    let navigating = false;
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+        redirect: "manual",
+      });
+      if (response.type === "opaqueredirect" || response.status === 0 ||
+          (response.status >= 300 && response.status < 400) || response.ok) {
+        navigating = true;
+        showLoadingSuccess("Success. Refreshing...");
+        await new Promise((resolve) => window.setTimeout(resolve, 450));
+        window.location.reload();
+        return true;
+      }
+      const documentText = await response.text();
+      const parsed = new DOMParser().parseFromString(documentText, "text/html");
+      const message = parsed.querySelector(".error-page p:not(.eyebrow)")?.textContent || "Action failed.";
+      showToast(message, true);
+      return false;
+    } catch {
+      showToast("Dashboard tidak bisa menghubungi bot.", true);
+      return false;
+    } finally {
+      if (!navigating) hideLoading();
+    }
+  };
+
+  document.querySelectorAll("form[data-async-form]").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submitter = event.submitter;
+      const confirmation = submitter?.dataset.confirm;
+      if (confirmation && !window.confirm(confirmation)) return;
+      setButtonBusy(submitter, true);
+      try {
+        const body = new URLSearchParams(new FormData(form));
+        if (submitter?.name) body.set(submitter.name, submitter.value);
+        await requestAction(
+          form.action,
+          body,
+          submitter?.textContent?.trim() || "Sending...",
+        );
+      } finally {
+        setButtonBusy(submitter, false);
+      }
+    });
+  });
+
+  document.querySelectorAll("a[href]").forEach((link) => {
+    link.addEventListener("click", (event) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey ||
+          event.shiftKey || event.altKey || link.target === "_blank" || link.hasAttribute("download")) return;
+      const target = new URL(link.href, window.location.href);
+      if (target.origin !== window.location.origin ||
+          (target.pathname === window.location.pathname && target.search === window.location.search && target.hash)) return;
+      showLoading(link.dataset.loadingLabel || "Opening page...");
+    });
+  });
+  window.addEventListener("pageshow", hideLoading);
+
   const dashboard = document.querySelector("[data-guild-id]");
-  if (!dashboard || !window.EventSource) return;
+  if (!dashboard) return;
+
+  const playlistDialog = document.querySelector("[data-playlist-dialog]");
+  document.querySelector("[data-open-playlist-dialog]")?.addEventListener("click", () => playlistDialog?.showModal());
+  document.querySelector("[data-close-playlist-dialog]")?.addEventListener("click", () => playlistDialog?.close());
+  document.querySelectorAll("[data-playlist-mode]").forEach((button) => button.addEventListener("click", () => {
+    const mode = button.dataset.playlistMode;
+    document.querySelectorAll("[data-playlist-mode]").forEach((item) => item.classList.toggle("active", item === button));
+    document.querySelectorAll("[data-playlist-panel]").forEach((panel) => { panel.hidden = panel.dataset.playlistPanel !== mode; });
+  }));
+
+  const playlistSearch = document.querySelector("[data-playlist-search]");
+  const filterPlaylists = () => {
+    const query = playlistSearch?.value.trim().toLowerCase() || "";
+    let visible = 0;
+    document.querySelectorAll("[data-playlist-entry]").forEach((entry) => {
+      entry.hidden = Boolean(query) && !entry.textContent.toLowerCase().includes(query);
+      if (!entry.hidden) visible += 1;
+    });
+    const empty = document.querySelector("[data-playlist-empty]");
+    if (empty) empty.hidden = visible !== 0;
+  };
+  playlistSearch?.addEventListener("input", filterPlaylists);
+
+  document.querySelectorAll("[data-track-search]").forEach((input) => input.addEventListener("input", () => {
+    const query = input.value.trim().toLowerCase();
+    input.closest("details")?.querySelectorAll("[data-playlist-track]").forEach((row) => {
+      row.hidden = Boolean(query) && !row.textContent.toLowerCase().includes(query);
+    });
+  }));
 
   dashboard.querySelectorAll("form").forEach((form) => {
     form.addEventListener("submit", async (event) => {
@@ -68,31 +183,43 @@
       event.preventDefault();
       const body = new URLSearchParams(new FormData(form));
       if (submitter?.name) body.set(submitter.name, submitter.value);
-      if (submitter) submitter.disabled = true;
+      setButtonBusy(submitter, true);
       try {
-        const response = await fetch(form.action, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: body.toString(),
-        });
-        if (response.ok) {
-          window.location.assign(response.url);
-          return;
-        }
-        const documentText = await response.text();
-        const parsed = new DOMParser().parseFromString(documentText, "text/html");
-        const message = parsed.querySelector(".error-page p:not(.eyebrow)")?.textContent || "Action failed.";
-        showToast(message, true);
-      } catch {
-        showToast("Dashboard tidak bisa menghubungi bot.", true);
+        await requestAction(form.action, body, submitter?.textContent?.trim() || "Saving changes...");
       } finally {
-        if (submitter) submitter.disabled = false;
+        setButtonBusy(submitter, false);
       }
     });
   });
 
+  let draggedTrack = null;
+  document.querySelectorAll("[data-playlist-track]").forEach((row) => {
+    row.addEventListener("dragstart", () => {
+      draggedTrack = row;
+      row.classList.add("dragging");
+    });
+    row.addEventListener("dragend", () => {
+      row.classList.remove("dragging");
+      draggedTrack = null;
+    });
+    row.addEventListener("dragover", (event) => {
+      if (draggedTrack && draggedTrack.parentElement === row.parentElement) event.preventDefault();
+    });
+    row.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      if (!draggedTrack || draggedTrack.parentElement !== row.parentElement || draggedTrack === row) return;
+      const body = new URLSearchParams({
+        csrf: draggedTrack.dataset.csrf,
+        name: draggedTrack.dataset.playlistName,
+        position: draggedTrack.dataset.position,
+        to_position: row.dataset.position,
+        action: "move",
+      });
+      await requestAction(draggedTrack.dataset.actionUrl, body, "Reordering playlist...");
+    });
+  });
+
+  if (!window.EventSource) return;
   const events = new EventSource(`/dashboard/${dashboard.dataset.guildId}/events`);
   events.addEventListener("player", (message) => {
     const state = JSON.parse(message.data);

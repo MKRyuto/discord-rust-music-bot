@@ -9,7 +9,7 @@ use songbird::tracks::{ReadyState, TrackHandle};
 use songbird::{Event, EventContext, EventHandler, TrackEvent};
 
 use crate::music::track::Track;
-use crate::ui::player_panel;
+use crate::ui::{player_panel, queue_panel};
 use crate::{Data, Error};
 
 fn is_http_url(input: &str) -> bool {
@@ -130,6 +130,9 @@ pub async fn set_volume(
     set_volume_from_dashboard(data, guild_id, volume_percent).await?;
 
     player_panel::update_player_message(ctx, data, guild_id)
+        .await
+        .ok();
+    queue_panel::update_queue_message(ctx, data, guild_id)
         .await
         .ok();
 
@@ -647,6 +650,9 @@ pub async fn start_if_idle(
     player_panel::update_player_message(ctx, data, guild_id)
         .await
         .ok();
+    queue_panel::update_queue_message(ctx, data, guild_id)
+        .await
+        .ok();
     persist_queue(data, guild_id).await;
 
     Ok(())
@@ -662,7 +668,6 @@ pub async fn play_now(
         let state_lock = data.music.get(guild_id).await;
         let mut state = state_lock.lock().await;
         let previous_handle = state.current_handle.take();
-        state.suppress_next_end = previous_handle.is_some();
         state.now_playing = Some(track.clone());
         state.is_paused = false;
         state.skip_votes.clear();
@@ -675,6 +680,9 @@ pub async fn play_now(
 
     play_track(ctx, data, guild_id, track).await?;
     player_panel::update_player_message(ctx, data, guild_id)
+        .await
+        .ok();
+    queue_panel::update_queue_message(ctx, data, guild_id)
         .await
         .ok();
     persist_queue(data, guild_id).await;
@@ -695,7 +703,6 @@ pub async fn replay(
         };
 
         let current_handle = state.current_handle.take();
-        state.suppress_next_end = current_handle.is_some();
         state.is_paused = false;
         state.skip_votes.clear();
         (current_handle, track)
@@ -729,7 +736,6 @@ pub async fn previous(
         }
 
         let current_handle = state.current_handle.take();
-        state.suppress_next_end = current_handle.is_some();
         state.now_playing = Some(previous_track.clone());
         state.is_paused = false;
         state.skip_votes.clear();
@@ -874,7 +880,7 @@ fn spawn_prepare_timeout(
                 .as_ref()
                 .is_some_and(|handle| handle.uuid() == track_handle.uuid())
             {
-                music_state.suppress_next_end = true;
+                music_state.current_handle = None;
             } else {
                 return;
             }
@@ -956,7 +962,6 @@ pub async fn seek(
                 .clone()
                 .ok_or("Tidak ada lagu yang sedang diputar.")?;
             let handle = state.current_handle.take();
-            state.suppress_next_end = handle.is_some();
             state.is_paused = false;
             (handle, track)
         };
@@ -1042,16 +1047,12 @@ impl EventHandler for TrackErrorNotifier {
             }
         }
 
-        if let Some(errored_uuid) = errored_uuid {
-            let state_lock = self.data.music.get(self.guild_id).await;
-            let mut state = state_lock.lock().await;
-            if state
-                .current_handle
-                .as_ref()
-                .is_some_and(|handle| handle.uuid() == errored_uuid)
-            {
-                state.suppress_next_end = true;
-            }
+        let Some(errored_uuid) = errored_uuid else {
+            return Some(Event::Cancel);
+        };
+        if !claim_current_handle(&self.data, self.guild_id, errored_uuid).await {
+            tracing::debug!(?errored_uuid, "ignoring error from stale track handle");
+            return Some(Event::Cancel);
         }
 
         notify_playback_issue(
@@ -1078,22 +1079,18 @@ struct TrackEndNotifier {
 
 #[async_trait::async_trait]
 impl EventHandler for TrackEndNotifier {
-    async fn act(&self, _ctx: &EventContext<'_>) -> Option<Event> {
-        let should_suppress = {
-            let state_lock = self.data.music.get(self.guild_id).await;
-            let mut state = state_lock.lock().await;
-            if state.suppress_next_end {
-                state.suppress_next_end = false;
-                true
-            } else {
-                false
+    async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
+        let mut ended_uuid = None;
+        if let EventContext::Track(tracks) = ctx {
+            for (_, handle) in *tracks {
+                ended_uuid = Some(handle.uuid());
             }
+        }
+        let Some(ended_uuid) = ended_uuid else {
+            return Some(Event::Cancel);
         };
-
-        if should_suppress {
-            player_panel::update_player_message(&self.ctx, &self.data, self.guild_id)
-                .await
-                .ok();
+        if !claim_current_handle(&self.data, self.guild_id, ended_uuid).await {
+            tracing::debug!(?ended_uuid, "ignoring end from stale track handle");
             return Some(Event::Cancel);
         }
 
@@ -1102,6 +1099,25 @@ impl EventHandler for TrackEndNotifier {
         }
 
         Some(Event::Cancel)
+    }
+}
+
+async fn claim_current_handle(
+    data: &Data,
+    guild_id: serenity::GuildId,
+    event_uuid: uuid::Uuid,
+) -> bool {
+    let state_lock = data.music.get(guild_id).await;
+    let mut state = state_lock.lock().await;
+    if state
+        .current_handle
+        .as_ref()
+        .is_some_and(|handle| handle.uuid() == event_uuid)
+    {
+        state.current_handle = None;
+        true
+    } else {
+        false
     }
 }
 
@@ -1181,6 +1197,9 @@ pub async fn advance_queue(
     player_panel::update_player_message(ctx, data, guild_id)
         .await
         .ok();
+    queue_panel::update_queue_message(ctx, data, guild_id)
+        .await
+        .ok();
 
     if !started_track {
         spawn_idle_disconnect(ctx.clone(), data.clone(), guild_id);
@@ -1226,7 +1245,6 @@ pub async fn stop(
         state.queue.clear();
         state.now_playing = None;
         let current_handle = state.current_handle.take();
-        state.suppress_next_end = current_handle.is_some();
         state.is_paused = false;
         state.skip_votes.clear();
 
@@ -1236,6 +1254,9 @@ pub async fn stop(
     }
 
     player_panel::update_player_message(ctx, data, guild_id)
+        .await
+        .ok();
+    queue_panel::update_queue_message(ctx, data, guild_id)
         .await
         .ok();
 
@@ -1254,7 +1275,6 @@ pub async fn skip(
         let state_lock = data.music.get(guild_id).await;
         let mut state = state_lock.lock().await;
         let current_handle = state.current_handle.take();
-        state.suppress_next_end = current_handle.is_some();
         state.is_paused = false;
         state.skip_votes.clear();
 
@@ -1284,6 +1304,9 @@ pub async fn skip(
     }
 
     player_panel::update_player_message(ctx, data, guild_id)
+        .await
+        .ok();
+    queue_panel::update_queue_message(ctx, data, guild_id)
         .await
         .ok();
     persist_queue(data, guild_id).await;

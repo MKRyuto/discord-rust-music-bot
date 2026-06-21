@@ -46,6 +46,18 @@ pub struct AuditEntry {
 }
 
 #[derive(Clone, Debug)]
+pub struct FeedbackEntry {
+    pub id: i64,
+    pub user_id: u64,
+    pub user_name: String,
+    pub category: String,
+    pub subject: String,
+    pub message: String,
+    pub status: String,
+    pub created_at: u64,
+}
+
+#[derive(Clone, Debug)]
 pub struct ServerStats {
     pub unique_tracks: usize,
     pub total_plays: usize,
@@ -190,6 +202,20 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_web_audit_guild_created
                 ON web_audit_log(guild_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS web_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                user_name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                message TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_web_feedback_created
+                ON web_feedback(created_at DESC);
             ",
         )?;
 
@@ -225,6 +251,15 @@ impl Database {
             }
         }
 
+        if let Err(err) = conn.execute(
+            "ALTER TABLE web_feedback ADD COLUMN status TEXT NOT NULL DEFAULT 'open'",
+            [],
+        ) {
+            if !err.to_string().contains("duplicate column name") {
+                return Err(err.into());
+            }
+        }
+
         let applied_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?1)",
@@ -240,6 +275,10 @@ impl Database {
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?1)",
+            params![applied_at],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (5, ?1)",
             params![applied_at],
         )?;
 
@@ -391,6 +430,95 @@ impl Database {
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn add_web_feedback(
+        &self,
+        user_id: serenity::UserId,
+        user_name: &str,
+        category: &str,
+        subject: &str,
+        message: &str,
+    ) -> Result<(), Error> {
+        let conn = self.connect()?;
+        let created_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+        conn.execute(
+            "INSERT INTO web_feedback
+             (user_id, user_name, category, subject, message, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                user_id.get().to_string(),
+                user_name,
+                category,
+                subject,
+                message,
+                created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn web_feedback(
+        &self,
+        status: Option<&str>,
+        category: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<FeedbackEntry>, Error> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, user_name, category, subject, message, status, created_at
+             FROM web_feedback
+             WHERE (?1 IS NULL OR status = ?1)
+               AND (?2 IS NULL OR category = ?2)
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?3 OFFSET ?4",
+        )?;
+        let rows = stmt.query_map(
+            params![status, category, limit as i64, offset as i64],
+            |row| {
+                Ok(FeedbackEntry {
+                    id: row.get(0)?,
+                    user_id: row.get::<_, String>(1)?.parse::<u64>().unwrap_or_default(),
+                    user_name: row.get(2)?,
+                    category: row.get(3)?,
+                    subject: row.get(4)?,
+                    message: row.get(5)?,
+                    status: row.get(6)?,
+                    created_at: row.get::<_, i64>(7)?.max(0) as u64,
+                })
+            },
+        )?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn web_feedback_count(
+        &self,
+        status: Option<&str>,
+        category: Option<&str>,
+    ) -> Result<usize, Error> {
+        let conn = self.connect()?;
+        let count = conn.query_row(
+            "SELECT COUNT(*) FROM web_feedback
+             WHERE (?1 IS NULL OR status = ?1)
+               AND (?2 IS NULL OR category = ?2)",
+            params![status, category],
+            |row| row.get::<_, i64>(0),
+        )?;
+        Ok(count.max(0) as usize)
+    }
+
+    pub fn set_web_feedback_status(&self, id: i64, status: &str) -> Result<bool, Error> {
+        let conn = self.connect()?;
+        Ok(conn.execute(
+            "UPDATE web_feedback SET status = ?2 WHERE id = ?1",
+            params![id, status],
+        )? > 0)
+    }
+
+    pub fn delete_web_feedback(&self, id: i64) -> Result<bool, Error> {
+        let conn = self.connect()?;
+        Ok(conn.execute("DELETE FROM web_feedback WHERE id = ?1", params![id])? > 0)
     }
 
     pub fn guild_volume(&self, guild_id: serenity::GuildId) -> Result<u8, Error> {
@@ -1543,6 +1671,30 @@ mod tests {
         let audit = db.web_audit_log(guild_id, 10).expect("audit loads");
         assert_eq!(audit.len(), 1);
         assert_eq!(audit[0].action, "playlist.renamed");
+
+        db.add_web_feedback(
+            user_id,
+            "Listener",
+            "bug",
+            "Skip issue",
+            "Song played twice",
+        )
+        .expect("feedback saves");
+        let feedback = db
+            .web_feedback(Some("open"), Some("bug"), 10, 0)
+            .expect("feedback loads");
+        assert_eq!(feedback.len(), 1);
+        assert_eq!(feedback[0].category, "bug");
+        assert_eq!(feedback[0].subject, "Skip issue");
+        assert_eq!(feedback[0].status, "open");
+        assert!(db
+            .set_web_feedback_status(feedback[0].id, "resolved")
+            .expect("feedback resolves"));
+        assert_eq!(
+            db.web_feedback_count(Some("resolved"), None)
+                .expect("resolved feedback counts"),
+            1
+        );
 
         let backup_dir =
             std::env::temp_dir().join(format!("music-bot-backup-test-{}", uuid::Uuid::new_v4()));
