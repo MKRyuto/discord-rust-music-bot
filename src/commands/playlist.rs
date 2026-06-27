@@ -9,6 +9,8 @@ use crate::{
     Ctx, Error,
 };
 
+const YOUTUBE_PLAYLIST_IMPORT_LIMIT: usize = 2_000;
+
 /// Kelola saved playlist server ini.
 #[poise::command(
     slash_command,
@@ -400,11 +402,12 @@ fn import_youtube_playlist(
     url: &str,
     requested_by: serenity::UserId,
 ) -> Result<YoutubePlaylistDetails, Error> {
+    let playlist_end = YOUTUBE_PLAYLIST_IMPORT_LIMIT.to_string();
     let output = Command::new("yt-dlp")
         .args([
             "--flat-playlist",
             "--playlist-end",
-            "100",
+            playlist_end.as_str(),
             "--dump-single-json",
             "--skip-download",
             "--no-warnings",

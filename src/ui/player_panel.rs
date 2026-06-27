@@ -133,7 +133,7 @@ pub fn build_player_buttons(
         ]),
         CreateActionRow::Buttons(vec![
             CreateButton::new(BTN_SHUFFLE)
-                .label("Shuffle")
+                .label("Shuffle Queue")
                 .style(ButtonStyle::Secondary),
             CreateButton::new(BTN_PLAYLISTS)
                 .label("Playlists")

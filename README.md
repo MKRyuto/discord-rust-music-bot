@@ -5,7 +5,7 @@
 <p><strong>A production-minded Discord music bot with consistent audio, persistent queues, and a per-server web dashboard.</strong></p>
 
 <p>
-  <a href="https://github.com/MKRyuto/discord-rust-music-bot/releases"><img src="https://img.shields.io/badge/release-v2.2.1-42d3b2?style=flat-square" alt="Release v2.2.1"></a>
+  <a href="https://github.com/MKRyuto/discord-rust-music-bot/releases"><img src="https://img.shields.io/badge/release-v2.2.2-42d3b2?style=flat-square" alt="Release v2.2.2"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rustc-1.96.0-ff806f?style=flat-square&logo=rust&logoColor=white" alt="rustc 1.96.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/MKRyuto/discord-rust-music-bot?style=flat-square&color=f8d66d" alt="MIT License"></a>
   <a href="https://github.com/MKRyuto/discord-rust-music-bot/stargazers"><img src="https://img.shields.io/github/stars/MKRyuto/discord-rust-music-bot?style=flat-square&logo=github" alt="GitHub Stars"></a>
@@ -47,10 +47,23 @@ Additional highlights:
 - Slash commands only; no message-content intent required.
 - Interactive player and queue panels with buttons and select menus.
 - Queue and settings survive normal process restarts.
+- Feedback reports can include one bounded attachment without creating loose upload files.
+- Playlist editing includes clearer drag-and-drop handles and drop feedback.
+- Queue limits and YouTube playlist imports support up to 2,000 tracks.
 - Dynamic website identity from the connected Discord bot profile.
 - Encrypted persistent OAuth sessions, CSRF protection, security headers, and rate limiting.
 - SQLite WAL mode with busy-write protection and scheduled online backups.
 - Public user documentation at `/docs` with searchable command reference.
+
+## Latest Release
+
+**v2.2.2 - Feedback Attachments, Clearer Playlist Sorting, and Bigger Queues**
+
+- Added optional feedback attachments with a 1 MiB cap, stored inside SQLite with the report so deployments do not collect random upload files.
+- Added attachment download links in the operator feedback inbox and Discord webhook delivery for attached files.
+- Improved playlist drag-and-drop UI with a visible grip handle and drop target highlight.
+- Renamed shuffle controls to `Shuffle Queue` and added clearer dashboard feedback after a queue is shuffled.
+- Raised max queue per user and YouTube playlist import limits from 100 to 2,000 tracks.
 
 ## Stack
 

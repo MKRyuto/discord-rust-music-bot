@@ -196,7 +196,7 @@ DJ roles control protected commands inside Discord. A DJ role alone does not gra
 - [ ] Put `MUSIC_DB_BACKUP_DIR` on persistent storage and verify a backup can be restored.
 - [ ] Test login, logout, session restoration, and OAuth refresh.
 - [ ] Test play, pause, skip, previous, queue changes, and playlist playback in a real voice channel.
-- [ ] Import and play a 100-track YouTube playlist; confirm queue and player panels stay synchronized.
+- [ ] Import and play a large YouTube playlist; confirm queue and player panels stay synchronized.
 - [ ] Run repeated skip/current-track failure tests and confirm no track starts twice.
 - [ ] Test two guilds concurrently to confirm their queue, settings, and panels remain isolated.
 - [ ] Check `/privacy`, `/terms`, `/docs`, and `/healthz` from the public domain.

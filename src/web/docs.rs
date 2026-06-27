@@ -133,7 +133,7 @@ const COMMANDS: &[CommandDoc] = &[
     CommandDoc {
         category: "playlist",
         command: "/playlist import-youtube name url append",
-        description: "Import sampai 100 track dari playlist YouTube.",
+        description: "Import sampai 2000 track dari playlist YouTube.",
     },
     CommandDoc {
         category: "playlist",

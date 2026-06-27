@@ -12,7 +12,7 @@ use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
 };
 use axum::{
-    extract::{Form, Path, Query, Request, State},
+    extract::{Form, Multipart, Path, Query, Request, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{sse::Event, Html, IntoResponse, Redirect, Response, Sse},
@@ -29,6 +29,7 @@ use uuid::Uuid;
 
 use crate::{
     music::player,
+    storage::FeedbackAttachment,
     ui::{player_panel, queue_panel},
     Data, Error,
 };
@@ -39,6 +40,8 @@ const DISCORD_API: &str = "https://discord.com/api/v10";
 const SESSION_COOKIE: &str = "music_dashboard_session";
 const ADMINISTRATOR: u64 = 1 << 3;
 const MANAGE_GUILD: u64 = 1 << 5;
+const FEEDBACK_ATTACHMENT_MAX_BYTES: usize = 1024 * 1024;
+const YOUTUBE_PLAYLIST_IMPORT_LIMIT: usize = 2_000;
 
 #[derive(Clone)]
 pub struct BotProfile {
@@ -406,6 +409,10 @@ pub fn spawn(
             .route("/docs", get(documentation))
             .route("/feedback", get(feedback).post(submit_feedback))
             .route("/admin/feedback", get(feedback_inbox))
+            .route(
+                "/admin/feedback/{id}/attachment",
+                get(feedback_attachment),
+            )
             .route("/admin/feedback/action", post(feedback_action))
             .route("/invite", get(invite))
             .route("/auth/login", get(login))
@@ -603,7 +610,7 @@ async fn feedback(
     let form = session.as_ref().and_then(|session| {
         session.user.as_ref().map(|_| {
             format!(
-                "<form class=\"feedback-form\" method=\"post\" action=\"/feedback\" data-async-form><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Report type<select name=\"category\"><option value=\"bug\">Bug report</option><option value=\"feedback\">Feedback</option><option value=\"feature\">Feature request</option></select></label><label>Subject<input name=\"subject\" maxlength=\"100\" required></label><label>Details<textarea name=\"message\" rows=\"8\" maxlength=\"2000\" required placeholder=\"What happened, what did you expect, and how can we reproduce it?\"></textarea></label><p class=\"field-help\">Your Discord display name is attached so the operator can identify the report.</p><button class=\"button primary\" type=\"submit\">Send report</button></form>",
+                "<form class=\"feedback-form\" method=\"post\" action=\"/feedback\" enctype=\"multipart/form-data\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Report type<select name=\"category\"><option value=\"bug\">Bug report</option><option value=\"feedback\">Feedback</option><option value=\"feature\">Feature request</option></select></label><label>Subject<input name=\"subject\" maxlength=\"100\" required></label><label>Details<textarea name=\"message\" rows=\"8\" maxlength=\"2000\" required placeholder=\"What happened, what did you expect, and how can we reproduce it?\"></textarea></label><label>Attachment<input name=\"attachment\" type=\"file\" accept=\"image/png,image/jpeg,image/gif,image/webp,text/plain,application/pdf,.log\"></label><p class=\"field-help\">Optional attachment, max 1 MiB. Stored with the report and deleted with it, so the server does not collect loose upload files.</p><button class=\"button primary\" type=\"submit\">Send report</button></form>",
                 escape(&session.csrf_token)
             )
         })
@@ -625,9 +632,10 @@ async fn feedback(
 async fn submit_feedback(
     State(state): State<WebState>,
     headers: HeaderMap,
-    Form(form): Form<HashMap<String, String>>,
+    mut multipart: Multipart,
 ) -> WebResult<Response> {
     let (_, session) = require_session(&state, &headers).await?;
+    let (form, attachment) = parse_feedback_multipart(&mut multipart).await?;
     verify_csrf(&session, &form)?;
     let (user_id, user_name) = session_user(&session)?;
     check_action_rate_limit(
@@ -655,6 +663,7 @@ async fn submit_feedback(
             category,
             subject,
             message,
+            attachment.as_ref(),
         )
         .map_err(internal)?;
     if let Some(webhook_url) = state.config.feedback_webhook_url.clone() {
@@ -662,6 +671,7 @@ async fn submit_feedback(
         let category = category.to_string();
         let subject = subject.to_string();
         let message = message.to_string();
+        let attachment = attachment.clone();
         tokio::spawn(async move {
             if let Err(error) = send_feedback_webhook(
                 &webhook_url,
@@ -670,6 +680,7 @@ async fn submit_feedback(
                 &category,
                 &subject,
                 &message,
+                attachment.as_ref(),
             )
             .await
             {
@@ -722,8 +733,29 @@ async fn feedback_inbox(
             } else {
                 ("resolve", "Resolve")
             };
+            let attachment = report
+                .attachment_filename
+                .as_ref()
+                .map(|filename| {
+                    let size = report
+                        .attachment_size
+                        .map(format_file_size)
+                        .unwrap_or_else(|| "unknown size".to_string());
+                    let content_type = report
+                        .attachment_content_type
+                        .as_deref()
+                        .unwrap_or("application/octet-stream");
+                    format!(
+                        "<a class=\"feedback-attachment\" href=\"/admin/feedback/{}/attachment\">{} <span>{} · {}</span></a>",
+                        report.id,
+                        escape(filename),
+                        escape(&size),
+                        escape(content_type)
+                    )
+                })
+                .unwrap_or_default();
             format!(
-                "<article class=\"feedback-entry\"><header><div class=\"feedback-tags\"><span class=\"status-chip {}\">{}</span><span class=\"status-chip\">{}</span></div><time data-unix=\"{}\">{}</time></header><h2>{}</h2><p>{}</p><footer><span>#{} from {} (<code>{}</code>)</span><form method=\"post\" action=\"/admin/feedback/action\" data-async-form><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"id\" value=\"{}\"><button class=\"text-button\" name=\"action\" value=\"{}\">{}</button><button class=\"text-button danger\" name=\"action\" value=\"delete\" data-confirm=\"Delete this report permanently?\">Delete</button></form></footer></article>",
+                "<article class=\"feedback-entry\"><header><div class=\"feedback-tags\"><span class=\"status-chip {}\">{}</span><span class=\"status-chip\">{}</span></div><time data-unix=\"{}\">{}</time></header><h2>{}</h2><p>{}</p>{}<footer><span>#{} from {} (<code>{}</code>)</span><form method=\"post\" action=\"/admin/feedback/action\" data-async-form><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"id\" value=\"{}\"><button class=\"text-button\" name=\"action\" value=\"{}\">{}</button><button class=\"text-button danger\" name=\"action\" value=\"delete\" data-confirm=\"Delete this report permanently?\">Delete</button></form></footer></article>",
                 escape(&report.status),
                 escape(&report.status),
                 escape(&report.category),
@@ -731,6 +763,7 @@ async fn feedback_inbox(
                 report.created_at,
                 escape(&report.subject),
                 escape(&report.message),
+                attachment,
                 report.id,
                 escape(&report.user_name),
                 report.user_id,
@@ -780,6 +813,42 @@ async fn feedback_inbox(
         &nav(&state, user, Some(&session.csrf_token)),
         &content,
     )))
+}
+
+async fn feedback_attachment(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> WebResult<Response> {
+    let (_, session) = require_session(&state, &headers).await?;
+    require_operator(&state, &session)?;
+    let Some(attachment) = state
+        .data
+        .db
+        .web_feedback_attachment(id)
+        .map_err(internal)?
+    else {
+        return Err(WebError::new(
+            StatusCode::NOT_FOUND,
+            "Attachment tidak ditemukan.",
+        ));
+    };
+    let content_type = HeaderValue::from_str(&attachment.content_type)
+        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
+    let disposition = format!(
+        "attachment; filename=\"{}\"",
+        attachment.filename.replace(['"', '\\', '\r', '\n'], "_")
+    );
+    let disposition = HeaderValue::from_str(&disposition)
+        .unwrap_or_else(|_| HeaderValue::from_static("attachment"));
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CONTENT_DISPOSITION, disposition),
+        ],
+        attachment.bytes,
+    )
+        .into_response())
 }
 
 async fn feedback_action(
@@ -1209,7 +1278,7 @@ async fn guild_dashboard(
         })
         .collect::<WebResult<String>>()?;
     let library_html = format!(
-        "<section id=\"playlists\" class=\"library-panel full\"><header><div><p class=\"eyebrow\">Library</p><h2>Saved playlists</h2><p>Buat playlist manual atau import sampai 100 track dari YouTube.</p></div><strong>{} playlists</strong></header><div class=\"library-toolbar\"><label>Search library<input type=\"search\" placeholder=\"Playlist or song title\" data-playlist-search></label><button class=\"button primary\" type=\"button\" data-open-playlist-dialog>New playlist</button></div><dialog class=\"playlist-dialog\" data-playlist-dialog><header><div><p class=\"eyebrow\">New playlist</p><h2>Create your library</h2></div><button class=\"dialog-close\" type=\"button\" data-close-playlist-dialog>Close</button></header><div class=\"dialog-tabs\"><button class=\"active\" type=\"button\" data-playlist-mode=\"empty\">Empty playlist</button><button type=\"button\" data-playlist-mode=\"youtube\">Import YouTube</button></div><form class=\"dialog-form\" data-playlist-panel=\"empty\" method=\"post\" action=\"/dashboard/{}/playlists/create\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Playlist name<input name=\"name\" maxlength=\"64\" required></label><button class=\"button primary\" type=\"submit\">Create playlist</button></form><form class=\"dialog-form\" data-playlist-panel=\"youtube\" method=\"post\" action=\"/dashboard/{}/playlists/import\" hidden><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Playlist name (optional)<input name=\"name\" maxlength=\"64\" placeholder=\"Uses the YouTube title when empty\"></label><label>YouTube playlist URL<input name=\"url\" type=\"url\" required></label><button class=\"button primary\" type=\"submit\">Import playlist</button></form></dialog><ul class=\"playlist-list\" data-playlist-list>{}</ul><p class=\"command-empty\" data-playlist-empty hidden>No playlist or song matches your search.</p></section>",
+        "<section id=\"playlists\" class=\"library-panel full\"><header><div><p class=\"eyebrow\">Library</p><h2>Saved playlists</h2><p>Buat playlist manual atau import sampai {YOUTUBE_PLAYLIST_IMPORT_LIMIT} track dari YouTube.</p></div><strong>{} playlists</strong></header><div class=\"library-toolbar\"><label>Search library<input type=\"search\" placeholder=\"Playlist or song title\" data-playlist-search></label><button class=\"button primary\" type=\"button\" data-open-playlist-dialog>New playlist</button></div><dialog class=\"playlist-dialog\" data-playlist-dialog><header><div><p class=\"eyebrow\">New playlist</p><h2>Create your library</h2></div><button class=\"dialog-close\" type=\"button\" data-close-playlist-dialog>Close</button></header><div class=\"dialog-tabs\"><button class=\"active\" type=\"button\" data-playlist-mode=\"empty\">Empty playlist</button><button type=\"button\" data-playlist-mode=\"youtube\">Import YouTube</button></div><form class=\"dialog-form\" data-playlist-panel=\"empty\" method=\"post\" action=\"/dashboard/{}/playlists/create\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Playlist name<input name=\"name\" maxlength=\"64\" required></label><button class=\"button primary\" type=\"submit\">Create playlist</button></form><form class=\"dialog-form\" data-playlist-panel=\"youtube\" method=\"post\" action=\"/dashboard/{}/playlists/import\" hidden><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Playlist name (optional)<input name=\"name\" maxlength=\"64\" placeholder=\"Uses the YouTube title when empty\"></label><label>YouTube playlist URL<input name=\"url\" type=\"url\" required></label><button class=\"button primary\" type=\"submit\">Import playlist</button></form></dialog><ul class=\"playlist-list\" data-playlist-list>{}</ul><p class=\"command-empty\" data-playlist-empty hidden>No playlist or song matches your search.</p></section>",
         playlists.len(),
         guild.id,
         escape(&session.csrf_token),
@@ -1233,7 +1302,7 @@ async fn guild_dashboard(
         format!("<div class=\"toast\" role=\"status\" data-toast>{}<button type=\"button\" aria-label=\"Dismiss\" data-dismiss-toast>Close</button></div>", escape(message))
     }).unwrap_or_default();
     let player_controls = format!(
-        "<form class=\"player-controls\" method=\"post\" action=\"/dashboard/{}/player\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button name=\"action\" value=\"previous\">Previous</button><button class=\"primary-control\" name=\"action\" value=\"pause\">{}</button><button name=\"action\" value=\"skip\">Skip</button><button name=\"action\" value=\"replay\">Replay</button><button name=\"action\" value=\"shuffle\">Shuffle</button><button name=\"action\" value=\"loop\">Loop: {}</button><button class=\"danger\" name=\"action\" value=\"stop\">Stop</button><label>Volume<input name=\"volume\" type=\"range\" min=\"0\" max=\"200\" value=\"{}\"><button name=\"action\" value=\"volume\">Set</button></label></form>",
+        "<form class=\"player-controls\" method=\"post\" action=\"/dashboard/{}/player\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button name=\"action\" value=\"previous\">Previous</button><button class=\"primary-control\" name=\"action\" value=\"pause\">{}</button><button name=\"action\" value=\"skip\">Skip</button><button name=\"action\" value=\"replay\">Replay</button><button name=\"action\" value=\"shuffle\">Shuffle Queue</button><button name=\"action\" value=\"loop\">Loop: {}</button><button class=\"danger\" name=\"action\" value=\"stop\">Stop</button><label>Volume<input name=\"volume\" type=\"range\" min=\"0\" max=\"200\" value=\"{}\"><button name=\"action\" value=\"volume\">Set</button></label></form>",
         guild.id,
         escape(&session.csrf_token),
         if is_paused { "Resume" } else { "Pause" },
@@ -1248,7 +1317,7 @@ async fn guild_dashboard(
         "Playing"
     };
     let content = format!(
-        "{notice}<main class=\"shell dashboard-grid\" data-guild-id=\"{}\"><header class=\"page-header full\"><div><a class=\"back-link\" href=\"/dashboard\">Back to servers</a><p class=\"eyebrow\">Guild dashboard</p><h1>{}</h1></div><img class=\"guild-avatar\" src=\"{}\" alt=\"\"></header><section class=\"panel player-status\"><p class=\"eyebrow\">Now playing</p><h2 data-now-playing>{now}</h2><p><span data-queue-count>{}</span> tracks queued · <span data-player-status>{}</span></p>{}</section><section class=\"panel queue-manager\"><header><div><p class=\"eyebrow\">Queue</p><h2>Up next</h2></div><form method=\"post\" action=\"/dashboard/{}/queue\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button class=\"text-button danger\" name=\"action\" value=\"clear\">Clear queue</button></form></header><ol class=\"queue-preview\" data-queue-list>{}</ol></section><section class=\"panel stats-panel\"><p class=\"eyebrow\">Server stats</p><dl class=\"stat-grid\"><div><dt>Total plays</dt><dd>{}</dd></div><div><dt>Unique tracks</dt><dd>{}</dd></div><div><dt>Playlists</dt><dd>{}</dd></div></dl><h3>Top tracks</h3><ul class=\"history-list\">{}</ul></section>{}<section class=\"audit-panel full\"><header><p class=\"eyebrow\">Audit log</p><h2>Recent dashboard activity</h2></header><ul>{}</ul></section><form class=\"settings-form full\" method=\"post\" action=\"/dashboard/{}\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><section class=\"settings-band\"><header><p class=\"eyebrow\">Playback</p><h2>Audio and queue defaults</h2></header><div class=\"field-grid\"><label>Default volume<input name=\"volume_percent\" type=\"number\" min=\"0\" max=\"200\" value=\"{}\"></label><label>Play cooldown (seconds)<input name=\"cooldown_secs\" type=\"number\" min=\"0\" max=\"300\" value=\"{}\"></label><label>Max queue per user<input name=\"max_queue\" type=\"number\" min=\"1\" max=\"100\" value=\"{}\"></label><label>Vote skip threshold (%)<input name=\"vote_skip_percent\" type=\"number\" min=\"1\" max=\"100\" value=\"{}\"></label><label>Normalize volume cap (%)<input name=\"normalize_cap\" type=\"number\" min=\"1\" max=\"200\" value=\"{}\"></label><label>Idle timeout (seconds)<input name=\"idle_timeout\" type=\"number\" min=\"10\" max=\"600\" value=\"{}\"></label></div><div class=\"toggle-row\"><label><input name=\"normalize_enabled\" type=\"checkbox\" {}> Loudness normalization</label><label><input name=\"autoplay_enabled\" type=\"checkbox\" {}> Autoplay</label></div></section><section class=\"settings-band\"><header><p class=\"eyebrow\">Access</p><h2>DJ roles and command channels</h2></header><div class=\"selection-columns\"><fieldset><legend>DJ roles</legend><p class=\"field-help\">No selection means everyone can use music controls.</p><div class=\"check-list\">{}</div></fieldset><fieldset><legend>Allowed channels</legend><p class=\"field-help\">No selection means commands work in every channel.</p><div class=\"check-list\">{}</div></fieldset></div></section><section class=\"settings-band\"><header><p class=\"eyebrow\">Moderation</p><h2>Blocked search terms</h2></header><label>One term per line<textarea name=\"blocked_terms\" rows=\"7\">{}</textarea></label></section><div class=\"save-bar\"><p>Changes apply to this server only.</p><button class=\"button primary\" type=\"submit\">Save settings</button></div></form></main>",
+        "{notice}<main class=\"shell dashboard-grid\" data-guild-id=\"{}\"><header class=\"page-header full\"><div><a class=\"back-link\" href=\"/dashboard\">Back to servers</a><p class=\"eyebrow\">Guild dashboard</p><h1>{}</h1></div><img class=\"guild-avatar\" src=\"{}\" alt=\"\"></header><section class=\"panel player-status\"><p class=\"eyebrow\">Now playing</p><h2 data-now-playing>{now}</h2><p><span data-queue-count>{}</span> tracks queued · <span data-player-status>{}</span></p>{}</section><section class=\"panel queue-manager\"><header><div><p class=\"eyebrow\">Queue</p><h2>Up next</h2></div><form method=\"post\" action=\"/dashboard/{}/queue\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button class=\"text-button danger\" name=\"action\" value=\"clear\">Clear queue</button></form></header><ol class=\"queue-preview\" data-queue-list>{}</ol></section><section class=\"panel stats-panel\"><p class=\"eyebrow\">Server stats</p><dl class=\"stat-grid\"><div><dt>Total plays</dt><dd>{}</dd></div><div><dt>Unique tracks</dt><dd>{}</dd></div><div><dt>Playlists</dt><dd>{}</dd></div></dl><h3>Top tracks</h3><ul class=\"history-list\">{}</ul></section>{}<section class=\"audit-panel full\"><header><p class=\"eyebrow\">Audit log</p><h2>Recent dashboard activity</h2></header><ul>{}</ul></section><form class=\"settings-form full\" method=\"post\" action=\"/dashboard/{}\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><section class=\"settings-band\"><header><p class=\"eyebrow\">Playback</p><h2>Audio and queue defaults</h2></header><div class=\"field-grid\"><label>Default volume<input name=\"volume_percent\" type=\"number\" min=\"0\" max=\"200\" value=\"{}\"></label><label>Play cooldown (seconds)<input name=\"cooldown_secs\" type=\"number\" min=\"0\" max=\"300\" value=\"{}\"></label><label>Max queue per user<input name=\"max_queue\" type=\"number\" min=\"1\" max=\"{}\" value=\"{}\"></label><label>Vote skip threshold (%)<input name=\"vote_skip_percent\" type=\"number\" min=\"1\" max=\"100\" value=\"{}\"></label><label>Normalize volume cap (%)<input name=\"normalize_cap\" type=\"number\" min=\"1\" max=\"200\" value=\"{}\"></label><label>Idle timeout (seconds)<input name=\"idle_timeout\" type=\"number\" min=\"10\" max=\"600\" value=\"{}\"></label></div><div class=\"toggle-row\"><label><input name=\"normalize_enabled\" type=\"checkbox\" {}> Loudness normalization</label><label><input name=\"autoplay_enabled\" type=\"checkbox\" {}> Autoplay</label></div></section><section class=\"settings-band\"><header><p class=\"eyebrow\">Access</p><h2>DJ roles and command channels</h2></header><div class=\"selection-columns\"><fieldset><legend>DJ roles</legend><p class=\"field-help\">No selection means everyone can use music controls.</p><div class=\"check-list\">{}</div></fieldset><fieldset><legend>Allowed channels</legend><p class=\"field-help\">No selection means commands work in every channel.</p><div class=\"check-list\">{}</div></fieldset></div></section><section class=\"settings-band\"><header><p class=\"eyebrow\">Moderation</p><h2>Blocked search terms</h2></header><label>One term per line<textarea name=\"blocked_terms\" rows=\"7\">{}</textarea></label></section><div class=\"save-bar\"><p>Changes apply to this server only.</p><button class=\"button primary\" type=\"submit\">Save settings</button></div></form></main>",
         guild.id,
         escape(&guild.name),
         escape(&guild.icon_url()),
@@ -1268,6 +1337,7 @@ async fn guild_dashboard(
         escape(&session.csrf_token),
         db.guild_volume(serenity_guild_id).map_err(internal)?,
         db.play_cooldown_secs(serenity_guild_id).map_err(internal)?,
+        crate::storage::MAX_QUEUE_PER_USER_LIMIT,
         db.max_queue_per_user(serenity_guild_id).map_err(internal)?,
         db.vote_skip_percent(serenity_guild_id).map_err(internal)?,
         db.normalize_cap_percent(serenity_guild_id).map_err(internal)?,
@@ -1815,6 +1885,7 @@ async fn player_action(
     let guild_id = parse_guild_id(&guild_id)?;
     let action = form.get("action").map(String::as_str).unwrap_or_default();
     let discord = require_discord(&state)?;
+    let mut notice = "Player updated".to_string();
     match action {
         "pause" => {
             let has_track = {
@@ -1845,7 +1916,14 @@ async fn player_action(
             .await
             .map_err(internal)?,
         "shuffle" => {
-            player::shuffle_queue(&state.data, guild_id).await;
+            let total = player::shuffle_queue(&state.data, guild_id).await;
+            if total == 0 {
+                return Err(WebError::new(
+                    StatusCode::CONFLICT,
+                    "Queue butuh minimal 2 lagu buat di-shuffle.",
+                ));
+            }
+            notice = format!("Shuffled {total} queued track(s)");
         }
         "loop" => {
             let lock = state.data.music.get(guild_id).await;
@@ -1880,7 +1958,7 @@ async fn player_action(
             .await
             .ok();
     }
-    Ok(notice_redirect(guild_id, "Player updated"))
+    Ok(notice_redirect(guild_id, &notice))
 }
 
 async fn queue_action(
@@ -2043,6 +2121,111 @@ fn bounded_text<'a>(
         })
 }
 
+async fn parse_feedback_multipart(
+    multipart: &mut Multipart,
+) -> WebResult<(HashMap<String, String>, Option<FeedbackAttachment>)> {
+    let mut form = HashMap::new();
+    let mut attachment = None;
+    while let Some(field) = multipart.next_field().await.map_err(bad_multipart)? {
+        let Some(name) = field.name().map(str::to_string) else {
+            continue;
+        };
+        if name == "attachment" {
+            let filename = field.file_name().map(clean_attachment_filename);
+            let content_type = field
+                .content_type()
+                .map(str::to_string)
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let bytes = field.bytes().await.map_err(bad_multipart)?;
+            if bytes.is_empty() && filename.is_none() {
+                continue;
+            }
+            if bytes.len() > FEEDBACK_ATTACHMENT_MAX_BYTES {
+                return Err(WebError::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "Attachment maksimal 1 MiB.",
+                ));
+            }
+            if !is_allowed_feedback_attachment(&content_type, filename.as_deref()) {
+                return Err(WebError::new(
+                    StatusCode::BAD_REQUEST,
+                    "Tipe attachment tidak didukung.",
+                ));
+            }
+            attachment = Some(FeedbackAttachment {
+                filename: filename.unwrap_or_else(|| "attachment".to_string()),
+                content_type,
+                bytes: bytes.to_vec(),
+            });
+        } else {
+            let value = field.text().await.map_err(bad_multipart)?;
+            form.insert(name, value);
+        }
+    }
+    Ok((form, attachment))
+}
+
+fn bad_multipart(error: axum::extract::multipart::MultipartError) -> WebError {
+    WebError::new(
+        StatusCode::BAD_REQUEST,
+        format!("Form feedback tidak valid: {error}"),
+    )
+}
+
+fn clean_attachment_filename(value: &str) -> String {
+    let cleaned = value
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control() && !matches!(character, '/' | '\\' | ':'))
+        .take(96)
+        .collect::<String>();
+    if cleaned.is_empty() {
+        "attachment".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn is_allowed_feedback_attachment(content_type: &str, filename: Option<&str>) -> bool {
+    let content_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let type_allowed = matches!(
+        content_type.as_str(),
+        "image/png"
+            | "image/jpeg"
+            | "image/gif"
+            | "image/webp"
+            | "text/plain"
+            | "application/pdf"
+            | "application/octet-stream"
+    );
+    if !type_allowed {
+        return false;
+    }
+    let Some(filename) = filename else {
+        return content_type != "application/octet-stream";
+    };
+    let filename = filename.to_ascii_lowercase();
+    matches!(
+        filename.rsplit('.').next(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "txt" | "log" | "pdf")
+    )
+}
+
+fn format_file_size(size: usize) -> String {
+    if size >= 1024 * 1024 {
+        format!("{:.1} MiB", size as f64 / 1024.0 / 1024.0)
+    } else if size >= 1024 {
+        format!("{:.0} KiB", size as f64 / 1024.0)
+    } else {
+        format!("{size} B")
+    }
+}
+
 fn clean_playlist_name(value: &str) -> String {
     value
         .trim()
@@ -2103,13 +2286,12 @@ async fn send_feedback_webhook(
     category: &str,
     subject: &str,
     message: &str,
+    attachment: Option<&FeedbackAttachment>,
 ) -> Result<(), reqwest::Error> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
         .build()?;
-    client
-        .post(webhook_url)
-        .json(&serde_json::json!({
+    let payload = serde_json::json!({
             "username": "Music Bot Feedback",
             "allowed_mentions": { "parse": [] },
             "embeds": [{
@@ -2121,10 +2303,21 @@ async fn send_feedback_webhook(
                     { "name": "Reporter", "value": format!("{user_name} ({user_id})"), "inline": true }
                 ]
             }]
-        }))
-        .send()
-        .await?
-        .error_for_status()?;
+        });
+    let request = client.post(webhook_url);
+    let request = if let Some(attachment) = attachment {
+        let part = reqwest::multipart::Part::bytes(attachment.bytes.clone())
+            .file_name(attachment.filename.clone())
+            .mime_str(&attachment.content_type)?;
+        request.multipart(
+            reqwest::multipart::Form::new()
+                .text("payload_json", payload.to_string())
+                .part("files[0]", part),
+        )
+    } else {
+        request.json(&payload)
+    };
+    request.send().await?.error_for_status()?;
     Ok(())
 }
 
@@ -2505,7 +2698,7 @@ fn playlist_editor_item(
         .map(|(index, track)| {
             let position = index + 1;
             format!(
-                "<li draggable=\"true\" data-playlist-track data-position=\"{position}\" data-playlist-name=\"{}\" data-csrf=\"{}\" data-action-url=\"/dashboard/{guild_id}/playlists/track\"><span>{position}</span><div><strong>{}</strong><small>{}</small></div><form class=\"playlist-track-actions\" method=\"post\" action=\"/dashboard/{guild_id}/playlists/track\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"name\" value=\"{}\"><input type=\"hidden\" name=\"position\" value=\"{position}\"><button name=\"action\" value=\"up\" {}>Up</button><button name=\"action\" value=\"down\" {}>Down</button><button class=\"danger\" name=\"action\" value=\"remove\">Remove</button></form></li>",
+                "<li draggable=\"true\" data-playlist-track data-position=\"{position}\" data-playlist-name=\"{}\" data-csrf=\"{}\" data-action-url=\"/dashboard/{guild_id}/playlists/track\"><span class=\"track-position\">{position}</span><i class=\"drag-grip\" aria-hidden=\"true\"></i><div><strong>{}</strong><small>{}</small></div><form class=\"playlist-track-actions\" method=\"post\" action=\"/dashboard/{guild_id}/playlists/track\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"name\" value=\"{}\"><input type=\"hidden\" name=\"position\" value=\"{position}\"><button name=\"action\" value=\"up\" {}>Up</button><button name=\"action\" value=\"down\" {}>Down</button><button class=\"danger\" name=\"action\" value=\"remove\">Remove</button></form></li>",
                 escape(name),
                 escape(csrf),
                 escape(&track.title),

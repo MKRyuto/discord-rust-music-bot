@@ -277,13 +277,21 @@
     });
     row.addEventListener("dragend", () => {
       row.classList.remove("dragging");
+      document.querySelectorAll(".playlist-tracks > li.drop-target").forEach((item) => item.classList.remove("drop-target"));
       draggedTrack = null;
     });
     row.addEventListener("dragover", (event) => {
-      if (draggedTrack && draggedTrack.parentElement === row.parentElement) event.preventDefault();
+      if (draggedTrack && draggedTrack.parentElement === row.parentElement) {
+        event.preventDefault();
+        if (draggedTrack !== row) row.classList.add("drop-target");
+      }
+    });
+    row.addEventListener("dragleave", () => {
+      row.classList.remove("drop-target");
     });
     row.addEventListener("drop", async (event) => {
       event.preventDefault();
+      row.classList.remove("drop-target");
       if (!draggedTrack || draggedTrack.parentElement !== row.parentElement || draggedTrack === row) return;
       const source = draggedTrack;
       const target = row;

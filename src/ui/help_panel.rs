@@ -33,7 +33,7 @@ pub fn category_embed(category: &str) -> CreateEmbed {
         "playlists" => (
             "Help: Playlists",
             "`/playlist save`, `/playlist append`, `/playlist load`, `/playlist import-youtube`, `/playlist rename`, `/playlist list`, `/playlist delete`",
-            "Import YouTube menerima URL playlist dan maksimal 100 track per proses.",
+            "Import YouTube menerima URL playlist dan maksimal 2000 track per proses.",
         ),
         "settings" => (
             "Help: Settings",

@@ -1,6 +1,6 @@
 use poise::serenity_prelude as serenity;
 
-use crate::{permissions, Ctx, Error};
+use crate::{permissions, storage::MAX_QUEUE_PER_USER_LIMIT, Ctx, Error};
 
 /// Kelola setting music bot server.
 #[poise::command(
@@ -76,7 +76,7 @@ pub async fn cooldown(
 #[poise::command(slash_command)]
 pub async fn maxqueue(
     ctx: Ctx<'_>,
-    #[description = "Limit 1 sampai 100 lagu"] limit: usize,
+    #[description = "Limit 1 sampai 2000 lagu"] limit: usize,
 ) -> Result<(), Error> {
     if !permissions::require_music_setup(ctx).await? {
         return Ok(());
@@ -85,7 +85,7 @@ pub async fn maxqueue(
     let guild_id = ctx
         .guild_id()
         .ok_or("Command ini cuma bisa dipakai di server.")?;
-    let limit = limit.clamp(1, 100);
+    let limit = limit.clamp(1, MAX_QUEUE_PER_USER_LIMIT);
     ctx.data().db.set_max_queue_per_user(guild_id, limit)?;
     ctx.say(format!("Max queue per user set to `{limit}` lagu."))
         .await?;

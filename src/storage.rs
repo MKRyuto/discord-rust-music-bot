@@ -9,6 +9,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{music::track::Track, Error};
 
+pub const MAX_QUEUE_PER_USER_LIMIT: usize = 2_000;
+
 #[derive(Clone, Debug)]
 pub struct Database {
     path: PathBuf,
@@ -53,8 +55,18 @@ pub struct FeedbackEntry {
     pub category: String,
     pub subject: String,
     pub message: String,
+    pub attachment_filename: Option<String>,
+    pub attachment_content_type: Option<String>,
+    pub attachment_size: Option<usize>,
     pub status: String,
     pub created_at: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct FeedbackAttachment {
+    pub filename: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -210,6 +222,9 @@ impl Database {
                 category TEXT NOT NULL,
                 subject TEXT NOT NULL,
                 message TEXT NOT NULL,
+                attachment_filename TEXT,
+                attachment_content_type TEXT,
+                attachment_bytes BLOB,
                 status TEXT NOT NULL DEFAULT 'open',
                 created_at INTEGER NOT NULL
             );
@@ -257,6 +272,17 @@ impl Database {
         ) {
             if !err.to_string().contains("duplicate column name") {
                 return Err(err.into());
+            }
+        }
+        for statement in [
+            "ALTER TABLE web_feedback ADD COLUMN attachment_filename TEXT",
+            "ALTER TABLE web_feedback ADD COLUMN attachment_content_type TEXT",
+            "ALTER TABLE web_feedback ADD COLUMN attachment_bytes BLOB",
+        ] {
+            if let Err(err) = conn.execute(statement, []) {
+                if !err.to_string().contains("duplicate column name") {
+                    return Err(err.into());
+                }
             }
         }
 
@@ -439,19 +465,23 @@ impl Database {
         category: &str,
         subject: &str,
         message: &str,
+        attachment: Option<&FeedbackAttachment>,
     ) -> Result<(), Error> {
         let conn = self.connect()?;
         let created_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
         conn.execute(
             "INSERT INTO web_feedback
-             (user_id, user_name, category, subject, message, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (user_id, user_name, category, subject, message, attachment_filename, attachment_content_type, attachment_bytes, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 user_id.get().to_string(),
                 user_name,
                 category,
                 subject,
                 message,
+                attachment.map(|item| item.filename.as_str()),
+                attachment.map(|item| item.content_type.as_str()),
+                attachment.map(|item| item.bytes.as_slice()),
                 created_at
             ],
         )?;
@@ -467,7 +497,10 @@ impl Database {
     ) -> Result<Vec<FeedbackEntry>, Error> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
-            "SELECT id, user_id, user_name, category, subject, message, status, created_at
+            "SELECT id, user_id, user_name, category, subject, message,
+                    attachment_filename, attachment_content_type,
+                    CASE WHEN attachment_bytes IS NULL THEN NULL ELSE length(attachment_bytes) END,
+                    status, created_at
              FROM web_feedback
              WHERE (?1 IS NULL OR status = ?1)
                AND (?2 IS NULL OR category = ?2)
@@ -484,8 +517,13 @@ impl Database {
                     category: row.get(3)?,
                     subject: row.get(4)?,
                     message: row.get(5)?,
-                    status: row.get(6)?,
-                    created_at: row.get::<_, i64>(7)?.max(0) as u64,
+                    attachment_filename: row.get(6)?,
+                    attachment_content_type: row.get(7)?,
+                    attachment_size: row
+                        .get::<_, Option<i64>>(8)?
+                        .and_then(|size| usize::try_from(size).ok()),
+                    status: row.get(9)?,
+                    created_at: row.get::<_, i64>(10)?.max(0) as u64,
                 })
             },
         )?;
@@ -514,6 +552,27 @@ impl Database {
             "UPDATE web_feedback SET status = ?2 WHERE id = ?1",
             params![id, status],
         )? > 0)
+    }
+
+    pub fn web_feedback_attachment(&self, id: i64) -> Result<Option<FeedbackAttachment>, Error> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT attachment_filename, attachment_content_type, attachment_bytes
+             FROM web_feedback
+             WHERE id = ?1 AND attachment_bytes IS NOT NULL",
+            params![id],
+            |row| {
+                Ok(FeedbackAttachment {
+                    filename: row.get::<_, Option<String>>(0)?.unwrap_or_else(|| "attachment".to_string()),
+                    content_type: row
+                        .get::<_, Option<String>>(1)?
+                        .unwrap_or_else(|| "application/octet-stream".to_string()),
+                    bytes: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
     }
 
     pub fn delete_web_feedback(&self, id: i64) -> Result<bool, Error> {
@@ -871,7 +930,7 @@ impl Database {
     pub fn max_queue_per_user(&self, guild_id: serenity::GuildId) -> Result<usize, Error> {
         Ok(self
             .guild_setting_i64(guild_id, "max_queue_per_user", 10)?
-            .clamp(1, 100) as usize)
+            .clamp(1, MAX_QUEUE_PER_USER_LIMIT as i64) as usize)
     }
 
     pub fn set_max_queue_per_user(
@@ -879,7 +938,11 @@ impl Database {
         guild_id: serenity::GuildId,
         limit: usize,
     ) -> Result<(), Error> {
-        self.set_guild_setting_i64(guild_id, "max_queue_per_user", limit.clamp(1, 100) as i64)
+        self.set_guild_setting_i64(
+            guild_id,
+            "max_queue_per_user",
+            limit.clamp(1, MAX_QUEUE_PER_USER_LIMIT) as i64,
+        )
     }
 
     pub fn vote_skip_percent(&self, guild_id: serenity::GuildId) -> Result<u8, Error> {
@@ -1678,6 +1741,7 @@ mod tests {
             "bug",
             "Skip issue",
             "Song played twice",
+            None,
         )
         .expect("feedback saves");
         let feedback = db
